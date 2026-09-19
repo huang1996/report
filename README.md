@@ -140,7 +140,8 @@ git push origin v0.2.0     # 触发构建，几分钟后镜像即可在 Docker H
 - 第 5 章「业务巡检」按原设计留空人工填写（默认不添加）；原脚本中未启用的「业务可用性自动分析」未迁移
 - WAF 访问地域 / 攻击时间等字段做了可读化格式（时间戳转日期时间）
 - 单项 WAF 查询失败不会中断整份报告，会在对应章节注明原因并在日志中记录
-- 图表由纯 Go 渲染（freetype + 自绘柱状/饼图），运行时依赖系统中文字体（Docker 镜像已内置）
+- 图表由纯 Go 渲染（freetype + 自绘柱状/饼图）；**Noto Sans SC 字体内嵌在二进制中**（OFL 开源协议），不依赖容器/系统字体，任何环境文字均可渲染
+- 报告文件名格式：`报告名称_巡检开始日期_巡检结束日期.docx`（如 `巡检周报_20260912_20260918.docx`）
 
 ## 项目结构
 
@@ -153,6 +154,7 @@ report/                  # 项目根目录（Go module）
 │   ├── waf.go           # Safeline WAF PostgreSQL 采集
 │   ├── analyze.go       # 资源数据分析与风险研判
 │   ├── charts.go        # 图表绘制（freetype 自绘柱状图/饼图）
+│   ├── fonts/           # 内嵌中文字体 NotoSansSC-Regular.ttf（OFL 协议）
 │   ├── docx.go          # OOXML docx 生成器（三线表/图表/样式）
 │   ├── build.go         # 报告组装（章节、表格、文案）
 │   ├── webdav.go        # WebDAV 上传

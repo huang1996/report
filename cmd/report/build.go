@@ -409,7 +409,8 @@ func BuildReport(in *BuildInput) (string, error) {
 	}
 	outPath := cfg.Out
 	if outPath == "" {
-		outPath = JoinPath(cfg.ReportDir, sprintf("%s_%s.docx", title, in.WE.Format("20060102")))
+		outPath = JoinPath(cfg.ReportDir, sprintf("%s_%s_%s.docx",
+			title, in.WS.Format("20060102"), in.WE.Format("20060102")))
 	}
 	if parent := filepath.Dir(outPath); parent != "" && parent != "." {
 		if err := os.MkdirAll(parent, 0o755); err != nil {

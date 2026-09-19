@@ -43,8 +43,11 @@ func main() {
 	log.Debugf("配置加载完成：n9e=%s ds=%s project=%s db=%s",
 		cfg.Base, cfg.DS, cfg.Project, maskURL(cfg.DatabaseURL))
 
-	if err := LoadChartFont(fontCandidates); err != nil {
-		log.Warnf("%v", err)
+	fontSrc, err := LoadChartFont(fontCandidates)
+	if err != nil {
+		log.Errorf("%v（图表文字将无法渲染）", err)
+	} else {
+		log.Infof("图表字体：%s", fontSrc)
 	}
 
 	if cfg.ListDS {

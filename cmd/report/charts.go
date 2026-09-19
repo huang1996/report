@@ -4,6 +4,7 @@ package main
 // 文字渲染使用 freetype + 运行时加载的中文字体。
 
 import (
+	_ "embed"
 	"image"
 	"image/color"
 	"image/draw"
@@ -15,10 +16,24 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
+// 内嵌中文字体 NotoSansSC（SIL Open Font License 1.1，可自由再分发）。
+// 优先使用内嵌字体而非系统字体：一是保证任何环境（容器/裸机）下图表文字都能渲染，
+// 二是渲染结果跨环境一致——Debian 的 fonts-droid-fallback 等纯 CJK 回退字体
+// 不含数字/拉丁字形，会导致图表中的数值标签全部缺失。
+//
+//go:embed fonts/NotoSansSC-Regular.ttf
+var embeddedFontData []byte
+
 var chartFont *truetype.Font
 
-// LoadChartFont 依次尝试字体路径，找到第一个可解析的字体（TTC 兼容性差，优先 TTF）
-func LoadChartFont(paths []string) error {
+// LoadChartFont 优先加载内嵌字体；失败时依次尝试系统字体路径。
+// 返回值 fontSrc 为实际加载来源（用于日志），err 非空表示无任何可用字体。
+func LoadChartFont(paths []string) (fontSrc string, err error) {
+	// 内嵌字体优先：跨环境一致且覆盖数字/拉丁/CJK
+	if f, err := truetype.Parse(embeddedFontData); err == nil {
+		chartFont = f
+		return "内嵌字体 NotoSansSC-Regular.ttf", nil
+	}
 	for _, p := range paths {
 		data, err := readFile(p)
 		if err != nil {
@@ -29,9 +44,9 @@ func LoadChartFont(paths []string) error {
 			continue
 		}
 		chartFont = f
-		return nil
+		return p, nil
 	}
-	return errFontNotFound
+	return "", errFontNotFound
 }
 
 var errFontNotFound = fmtErr("未找到可用的中文字体，图表文字将缺失")

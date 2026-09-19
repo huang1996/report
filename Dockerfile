@@ -10,9 +10,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -o /out/inspection-report ./cmd/report
 
 # ---------- 运行阶段 ----------
+# 图表中文字体已内嵌在二进制中（cmd/report/fonts/），运行镜像无需安装字体包
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates tzdata fonts-droid-fallback \
+        ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/inspection-report /app/inspection-report
