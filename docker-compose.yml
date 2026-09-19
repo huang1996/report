@@ -1,0 +1,25 @@
+services:
+  report:
+    build: .
+    image: inspection-report:latest
+    container_name: inspection-report
+    restart: always
+    env_file: .env
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./report:/app/report
+      - ./logs:/app/logs
+    # ===== 命令参数在此自定义（双通道配置项：env 大写、参数同名小写）=====
+    # 1) 常驻定时模式：每天 REPORT_TIME（.env 中配置）自动生成当前巡检周（周六~周五）报告
+    command: ["-n9e_project", "智慧民政"]
+    # 2) 单次立即生成指定周期报告（用完即退，配合 --rm 使用更佳）：
+    # command: ["-now", "-n9e_project", "智慧民政", "-start", "2026-09-07", "-end", "2026-09-13"]
+    # 3) 单次立即生成、按自然周（周一~周日）：
+    # command: ["-now", "-n9e_project", "智慧民政", "-period", "week"]
+    # 4) 指定数据源ID（跳过自动检索，更快）：
+    # command: ["-now", "-n9e_ds_id", "47", "-start", "2026-09-07", "-end", "2026-09-13"]
+    # 5) 先核对采集数据（只打印不生成报告）：
+    # command: ["-now", "-n9e_project", "智慧民政", "-dump"]
+    # 6) 自定义报告名称与运维工程师：
+    # command: ["-now", "-n9e_project", "智慧民政", "-report_name", "数投集团智慧民政平台巡检周报", "-report_engineer", "张三"]

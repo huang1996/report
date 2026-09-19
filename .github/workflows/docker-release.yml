@@ -1,0 +1,165 @@
+# =====================================================================
+# GitHub Actions：打版本标签时自动构建多架构 Docker 镜像并发布
+#
+# 触发方式：推送 v 开头的标签，如 v0.1.0
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# 产出：
+#   1. Docker Hub 镜像 huangtao1996/report:<tag> 与 huangtao1996/report:latest
+#      （linux/amd64 + linux/arm64 双架构）
+#   2. GitHub Release：
+#      - 附件：linux/amd64、linux/arm64、windows/amd64 三平台二进制压缩包
+#      - 描述：自动汇总自上一个标签以来的提交作为版本更新说明 + 镜像拉取命令
+#
+# 所需仓库 Secrets（Settings → Secrets and variables → Actions）：
+#   DOCKERHUB_USERNAME —— Docker Hub 用户名
+#   DOCKERHUB_TOKEN    —— Docker Hub Access Token（非登录密码）
+# =====================================================================
+
+name: Build & Publish Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ---------- 构建并推送多架构镜像 ----------
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # arm64 交叉构建需要 QEMU 模拟
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 生成镜像标签：<tag>（如 v0.1.0 → 0.1.0）+ latest
+      - name: 生成镜像标签与元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: huangtao1996/report
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: 构建并推送镜像（amd64 + arm64）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 将 git 标签注入二进制版本号（-version 可见）
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------- 交叉编译各平台二进制 ----------
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go 1.23
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: 构建各平台二进制并打包
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          build() {
+            local os="$1" arch="$2"
+            local name="inspection-report_${VERSION}_${os}_${arch}"
+            echo "==> 构建 ${name}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.AppVersion=${GITHUB_REF_NAME}" \
+              -o "dist/${name}" ./cmd/report
+            if [ "$os" = "windows" ]; then
+              mv "dist/${name}" "dist/${name}.exe"
+              (cd dist && zip -q "${name}.zip" "${name}.exe" && rm "${name}.exe")
+            else
+              tar -czf "dist/${name}.tar.gz" -C dist "$(basename "${name}")"
+              rm "dist/${name}"
+            fi
+          }
+          build linux   amd64
+          build linux   arm64
+          build windows amd64
+          ls -lh dist/
+
+      - name: 上传构建产物（供 Release 附件使用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/*
+          retention-days: 1
+
+  # ---------- 创建 GitHub Release（版本更新说明 + 二进制附件） ----------
+  release:
+    runs-on: ubuntu-latest
+    needs: [docker, binaries]   # 镜像推送与二进制构建全部成功后再发 Release
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+
+      - name: 创建 Release（更新说明 + 二进制附件）
+        uses: softprops/action-gh-release@v2
+        with:
+          # 自动汇总自上一个标签以来的提交与贡献者，作为版本更新说明
+          generate_release_notes: true
+          # dist/ 下的二进制压缩包将作为 Release 附件上传
+          files: dist/*
+          body: |
+            ## 版本 ${{ github.ref_name }}
+
+            > 变更明细见下方自动生成的更新日志（自上一版本以来的全部提交）。
+
+            ### Docker 镜像
+
+            ```bash
+            docker pull huangtao1996/report:${{ github.ref_name }}
+            docker pull huangtao1996/report:latest   # 始终指向最新版本
+            ```
+
+            - 支持架构：linux/amd64、linux/arm64
+            - 镜像内已注入版本号，可用 `docker run --rm huangtao1996/report:${{ github.ref_name }} -version` 验证
+
+            ### 二进制下载（附件）
+
+            | 文件 | 适用平台 |
+            |---|---|
+            | `inspection-report_<版本>_linux_amd64.tar.gz` | Linux x86_64 |
+            | `inspection-report_<版本>_linux_arm64.tar.gz` | Linux ARM64（如飞腾/鲲鹏/树莓派） |
+            | `inspection-report_<版本>_windows_amd64.zip` | Windows x86_64 |
+
+            各平台二进制同样已注入版本号，运行 `inspection-report -version` 可验证。
+          # 如需手动补充更新内容，直接在 GitHub Release 页面编辑即可

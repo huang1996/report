@@ -1,0 +1,6 @@
+/report/
+/logs/
+.workbuddy/
+*.docx
+.env
+*.exe

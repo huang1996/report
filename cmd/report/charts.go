@@ -1,0 +1,424 @@
+package main
+
+// charts.go —— 纯 Go 图表渲染（分组柱状图 / 饼图），输出 PNG 供 docx 嵌入。
+// 文字渲染使用 freetype + 运行时加载的中文字体。
+
+import (
+	"image"
+	"image/color"
+	"image/draw"
+	"io"
+	"math"
+
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/math/fixed"
+)
+
+var chartFont *truetype.Font
+
+// LoadChartFont 依次尝试字体路径，找到第一个可解析的字体（TTC 兼容性差，优先 TTF）
+func LoadChartFont(paths []string) error {
+	for _, p := range paths {
+		data, err := readFile(p)
+		if err != nil {
+			continue
+		}
+		f, err := truetype.Parse(data)
+		if err != nil {
+			continue
+		}
+		chartFont = f
+		return nil
+	}
+	return errFontNotFound
+}
+
+var errFontNotFound = fmtErr("未找到可用的中文字体，图表文字将缺失")
+
+type strErr string
+
+func (e strErr) Error() string { return string(e) }
+
+func fmtErr(s string) error { return strErr(s) }
+
+func readFile(p string) ([]byte, error) {
+	f, err := openFile(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+var fontCandidates = []string{
+	"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+	"/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+	"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+	"/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+	"C:\\Windows\\Fonts\\simhei.ttf",
+	"C:\\Windows\\Fonts\\msyh.ttc",
+}
+
+var chartPalette = []string{
+	"2E75B6", "ED7D31", "7F7F7F", "5B9BD5", "A5A5A5",
+	"FFC000", "4472C4", "70AD47", "C00000", "7030A0",
+}
+
+func hexColor(h string) color.RGBA {
+	var r, g, b uint8
+	if len(h) == 7 && h[0] == '#' {
+		h = h[1:]
+	}
+	if len(h) == 6 {
+		r = hexByte(h[0], h[1])
+		g = hexByte(h[2], h[3])
+		b = hexByte(h[4], h[5])
+	}
+	return color.RGBA{r, g, b, 255}
+}
+
+func hexByte(a, b byte) uint8 {
+	return hexNibble(a)<<4 | hexNibble(b)
+}
+
+func hexNibble(c byte) uint8 {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	}
+	return 0
+}
+
+// textWidth 估算字符串像素宽度
+func textWidth(s string, sizePx float64) int {
+	if chartFont == nil {
+		return len(s) * int(sizePx*0.7)
+	}
+	scale := sizePx / float64(chartFont.FUnitsPerEm())
+	w := 0.0
+	for _, r := range s {
+		idx := chartFont.Index(r)
+		hm := chartFont.HMetric(fixed.Int26_6(chartFont.FUnitsPerEm()), idx)
+		w += float64(hm.AdvanceWidth) * scale
+	}
+	return int(math.Ceil(w))
+}
+
+// drawText align: 0=左对齐(x为左缘) 1=居中(x为中心) 2=右对齐(x为右缘)；y 为文字顶部
+func drawText(dst *image.RGBA, s string, x, y int, sizePx float64, c color.RGBA, align int) {
+	if chartFont == nil || s == "" {
+		return
+	}
+	w := textWidth(s, sizePx)
+	switch align {
+	case 1:
+		x -= w / 2
+	case 2:
+		x -= w
+	}
+	ctx := freetype.NewContext()
+	ctx.SetDPI(72)
+	ctx.SetFont(chartFont)
+	ctx.SetFontSize(sizePx)
+	ctx.SetClip(dst.Bounds())
+	ctx.SetDst(dst)
+	ctx.SetSrc(image.NewUniform(c))
+	pt := freetype.Pt(x, y+int(sizePx*0.82))
+	ctx.DrawString(s, pt)
+}
+
+// renderLabel 把文字渲染到透明底图（供旋转）
+func renderLabel(s string, sizePx float64, c color.RGBA) *image.RGBA {
+	w := textWidth(s, sizePx) + 4
+	h := int(sizePx*1.4) + 4
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	drawText(img, s, 2, 0, sizePx, c, 0)
+	return img
+}
+
+func rotateImg(src *image.RGBA, deg float64) *image.RGBA {
+	rad := deg * math.Pi / 180
+	sin, cos := math.Sin(rad), math.Cos(rad)
+	w, h := src.Bounds().Dx(), src.Bounds().Dy()
+	nw := int(math.Abs(float64(w)*cos)+math.Abs(float64(h)*sin)) + 2
+	nh := int(math.Abs(float64(w)*sin)+math.Abs(float64(h)*cos)) + 2
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	cx, cy := float64(w)/2, float64(h)/2
+	ncx, ncy := float64(nw)/2, float64(nh)/2
+	for y := 0; y < nh; y++ {
+		for x := 0; x < nw; x++ {
+			dx := float64(x) - ncx
+			dy := float64(y) - ncy
+			sx := cos*dx + sin*dy + cx
+			sy := -sin*dx + cos*dy + cy
+			if sx < 0 || sy < 0 || sx >= float64(w) || sy >= float64(h) {
+				continue
+			}
+			dst.Set(x, y, src.At(int(sx), int(sy)))
+		}
+	}
+	return dst
+}
+
+func vline(img *image.RGBA, x, y0, y1 int, c color.RGBA) {
+	for y := y0; y <= y1; y++ {
+		img.Set(x, y, c)
+	}
+}
+
+func hline(img *image.RGBA, y, x0, x1 int, c color.RGBA) {
+	for x := x0; x <= x1; x++ {
+		img.Set(x, y, c)
+	}
+}
+
+// 虚线（线段 12px 间隔 8px）
+func dashH(img *image.RGBA, y, x0, x1 int, c color.RGBA) {
+	for x := x0; x <= x1; x += 20 {
+		for i := 0; i < 12 && x+i <= x1; i++ {
+			img.Set(x+i, y, c)
+			img.Set(x+i, y+1, c)
+		}
+	}
+}
+
+// 点状网格线
+func dotH(img *image.RGBA, y, x0, x1 int, c color.RGBA) {
+	for x := x0; x <= x1; x += 6 {
+		img.Set(x, y, c)
+	}
+}
+
+func fillRect(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
+	for y := y0; y <= y1; y++ {
+		for x := x0; x <= x1; x++ {
+			img.Set(x, y, c)
+		}
+	}
+}
+
+// BarSeries 单个柱状序列
+type BarSeries struct {
+	Name   string
+	Color  string
+	Values []float64
+	Fmt    string // 数值标签格式，如 "%.2f%%"
+}
+
+// DrawGroupedBarChart 分组柱状图（对应原脚本的 chart_cur_peak / chart_disk_io / chart_gap / chart_overview）
+func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
+	warnLine float64, warnText, ylabel string, ymaxOverride float64) image.Image {
+
+	const W, H = 1960, 800
+	const left, right, top, bottom = 110, 50, 95, 120
+	img := image.NewRGBA(image.Rect(0, 0, W, H))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+
+	plotW := W - left - right
+	plotH := H - top - bottom
+	n := len(labels)
+
+	ymax := ymaxOverride
+	if ymax <= 0 {
+		mx := 100.0
+		for _, s := range series {
+			for _, v := range s.Values {
+				if v*1.35 > mx {
+					mx = v * 1.35
+				}
+			}
+		}
+		ymax = math.Ceil(mx/20) * 20
+	}
+	yOf := func(v float64) int {
+		return top + plotH - int(v/ymax*float64(plotH))
+	}
+
+	// 网格与刻度
+	grey := hexColor("D0D0D0")
+	txtC := hexColor("404040")
+	div := 5
+	for i := 0; i <= div; i++ {
+		v := ymax * float64(i) / float64(div)
+		y := yOf(v)
+		dotH(img, y, left, W-right, grey)
+		lb := fmtNum(v)
+		drawText(img, lb, left-10, y-10, 17, txtC, 2)
+	}
+
+	// 坐标轴
+	axisC := hexColor("909090")
+	hline(img, top+plotH, left, W-right, axisC)
+	vline(img, left, top, top+plotH, axisC)
+
+	if n == 0 {
+		return img
+	}
+
+	groupW := float64(plotW) / float64(n)
+	k := len(series)
+	barGap := 4
+	barW := (groupW*0.68 - float64((k-1)*barGap)) / float64(k)
+	if barW < 2 {
+		barW = 2
+	}
+
+	for gi := 0; gi < n; gi++ {
+		gx := float64(left) + groupW*float64(gi) + groupW*0.16
+		for si := 0; si < k; si++ {
+			v := series[si].Values[gi]
+			x0 := int(gx + float64(si)*(barW+float64(barGap)))
+			y0 := yOf(v)
+			y1 := top + plotH
+			fillRect(img, x0, y0, x0+int(barW), y1, hexColor(series[si].Color))
+			// 数值标签
+			lb := "0"
+			if series[si].Fmt != "" {
+				lb = sprintf(series[si].Fmt, v)
+			} else {
+				lb = fmtNum(v)
+			}
+			drawText(img, lb, x0+int(barW)/2, y0-22, 15, txtC, 1)
+		}
+	}
+
+	// 预警线
+	if warnLine > 0 {
+		yw := yOf(warnLine)
+		if yw > top && yw < top+plotH {
+			red := hexColor("C00000")
+			dashH(img, yw, left, W-right, red)
+			drawText(img, warnText, W-right-8, yw-24, 17, red, 2)
+		}
+	}
+
+	// X 轴标签（>10 个时旋转 30°）
+	labC := txtC
+	for gi := 0; gi < n; gi++ {
+		cx := int(float64(left) + groupW*float64(gi) + groupW/2)
+		if n > 10 {
+			rot := rotateImg(renderLabel(labels[gi], 18, labC), 30)
+			b := rot.Bounds()
+			draw.Draw(img, image.Rect(cx-b.Dx()+6, top+plotH+8, cx+6, top+plotH+8+b.Dy()),
+				rot, image.Point{}, draw.Over)
+		} else {
+			drawText(img, labels[gi], cx, top+plotH+10, 19, labC, 1)
+		}
+	}
+
+	// 标题 / 图例 / 单位说明
+	navy := hexColor("1F3864")
+	drawText(img, title, W/2, 22, 25, navy, 1)
+	lx := left + 10
+	for _, s := range series {
+		fillRect(img, lx, 62, lx+16, 78, hexColor(s.Color))
+		drawText(img, s.Name, lx+24, 60, 19, txtC, 0)
+		lx += 24 + textWidth(s.Name, 19) + 30
+	}
+	if ylabel != "" {
+		drawText(img, "单位："+ylabel, W-right-8, 60, 17, hexColor("808080"), 2)
+	}
+	return img
+}
+
+func fmtNum(v float64) string {
+	if v >= 1000 {
+		return sprintf("%.0f", v)
+	}
+	if v == math.Trunc(v) {
+		return sprintf("%.0f", v)
+	}
+	return sprintf("%.1f", v)
+}
+
+// PieItem 饼图条目
+type PieItem struct {
+	Label string
+	Value float64
+}
+
+// DrawPieChart 饼图（对应原脚本 get_attack_total_by_type 的攻击类型统计图）
+func DrawPieChart(title string, items []PieItem) image.Image {
+	const W, H = 1400, 900
+	img := image.NewRGBA(image.Rect(0, 0, W, H))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+
+	drawText(img, title, W/2, 26, 28, hexColor("1F3864"), 1)
+	if len(items) == 0 {
+		return img
+	}
+
+	cx, cy, r := 560, 490, 300
+	total := 0.0
+	for _, it := range items {
+		total += it.Value
+	}
+	if total <= 0 {
+		return img
+	}
+
+	start := -math.Pi / 2 // 12 点方向起，顺时针
+	for i, it := range items {
+		ang := it.Value / total * 2 * math.Pi
+		end := start + ang
+		mid := start + ang/2
+		ocx, ocy := cx, cy
+		if i == 0 { // 第一块外扩强调
+			ocx = cx + int(14*math.Cos(mid))
+			ocy = cy + int(14*math.Sin(mid))
+		}
+		fillSector(img, ocx, ocy, r, start, end, hexColor(chartPalette[i%len(chartPalette)]))
+		// 内部百分比
+		pct := it.Value / total * 100
+		px := ocx + int(0.62*float64(r)*math.Cos(mid))
+		py := ocy + int(0.62*float64(r)*math.Sin(mid))
+		drawText(img, sprintf("%.2f%%", pct), px, py-10, 17, hexColor("FFFFFF"), 1)
+		// 外部标签
+		lx := ocx + int(1.15*float64(r)*math.Cos(mid))
+		ly := ocy + int(1.15*float64(r)*math.Sin(mid))
+		align := 0
+		if math.Cos(mid) < 0 {
+			align = 2
+		}
+		drawText(img, it.Label, lx, ly-10, 19, hexColor("404040"), align)
+		start = end
+	}
+	// 图例（右侧）
+	ly0 := 240
+	for i, it := range items {
+		y := ly0 + i*44
+		fillRect(img, 1010, y, 1026, y+16, hexColor(chartPalette[i%len(chartPalette)]))
+		lb := sprintf("%s（%s）", it.Label, fmtNum(it.Value))
+		drawText(img, lb, 1036, y-3, 19, hexColor("404040"), 0)
+	}
+	return img
+}
+
+func fillSector(img *image.RGBA, cx, cy, r int, a0, a1 float64, c color.RGBA) {
+	for y := -r; y <= r; y++ {
+		for x := -r; x <= r; x++ {
+			if x*x+y*y > r*r {
+				continue
+			}
+			// 图像坐标 y 向下，角度取反
+			ang := math.Atan2(float64(-y), float64(x))
+			if angleIn(ang, a0, a1) {
+				img.Set(cx+x, cy+y, c)
+			}
+		}
+	}
+}
+
+func angleIn(ang, a0, a1 float64) bool {
+	// a0<a1；ang 落在 [a0,a1]（处理跨 ±π）
+	for ang < a0 {
+		ang += 2 * math.Pi
+	}
+	return ang <= a1
+}
