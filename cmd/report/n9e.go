@@ -187,15 +187,28 @@ func (c *N9EClient) QueryInstant(expr string, ts int64) ([]promSeries, error) {
 	return j.Data.Result, nil
 }
 
-// osDisplay 由 system_info 标签组装可读的操作系统名称
+// kylinVerRe 从内核版本号中提取麒麟大版本标记（银河麒麟基于 openEuler，
+// 内核版本串形如 4.19.90-52.22.v2207.ky10.x86_64，ky10 即 V10）
+var kylinVerRe = regexp.MustCompile(`ky(?:lin)?v?(\d+)`)
+
+// osDisplay 由 system_info 标签组装可读的操作系统名称。
+// 麒麟系统的 categraf 不上报 os_version 标签，此时从 kernel_version 的 ky<N> 标记推导版本
 func osDisplay(m map[string]string) string {
 	name := strings.TrimSpace(m["os_name"])
 	ver := strings.TrimSpace(m["os_version"])
 	if name == "" {
 		return ""
 	}
+	if strings.EqualFold(strings.TrimSpace(name), "kylin") {
+		name = "Kylin"
+	}
 	lower := strings.ToLower(name)
 	if strings.Contains(lower, "windows") || ver == "" || strings.Contains(ver, "build") {
+		if ver == "" {
+			if mm := kylinVerRe.FindStringSubmatch(strings.ToLower(m["kernel_version"])); mm != nil {
+				return name + " V" + mm[1]
+			}
+		}
 		return name
 	}
 	return name + " " + ver

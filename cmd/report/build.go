@@ -314,8 +314,8 @@ func BuildReport(in *BuildInput) (string, error) {
 			headers = append(headers, "业务系统")
 			widths = append(widths, 3.1)
 		}
-		headers = append(headers, "网络分区", "CPU规格", "内存容量", "磁盘容量", "操作系统", "运维工程师")
-		widths = append(widths, 2.0, 1.3, 1.5, 1.5, 2.6, 1.5)
+		headers = append(headers, "CPU规格", "内存容量", "磁盘容量", "操作系统", "运维工程师")
+		widths = append(widths, 1.3, 1.5, 1.5, 3.0, 1.5)
 		var own [][]string
 		for i := range rows {
 			r := &rows[i]
@@ -323,16 +323,16 @@ func BuildReport(in *BuildInput) (string, error) {
 			if multiProj {
 				row = append(row, orDash(r.Project))
 			}
-			row = append(row, orDash(r.Section), sprintf("%.0f 核", r.Cores),
+			row = append(row, sprintf("%.0f 核", r.Cores),
 				sprintf("%.0f GB", r.MemTotalGB), sprintf("%.0f GB", r.DiskCapGB),
 				orDash(r.OS), orDash(r.Engineer))
 			own = append(own, row)
 		}
 		// 操作系统列（文本较长，默认会被判为左对齐，此处强制居中）
 		// hideEmptyCols=false：即使个别主机取不到操作系统（显示「—」），列也不隐藏
-		osIdx := 6
+		osIdx := 5
 		if multiProj {
-			osIdx = 7
+			osIdx = 6
 		}
 		d.TableCenterCols(map[int]bool{osIdx: true}, headers, own, widths, nil, 9, false)
 		d.Caption("表 3　主机归属与资源规格")
