@@ -428,10 +428,7 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 			prev := math.NaN()
 			for _, i := range group {
 				mid := mids[i]
-				side := 1.0
-				if math.Cos(mid) < 0 {
-					side = -1.0
-				}
+				side := classifySide(mid)
 				c := hexColor(chartPalette[i%len(chartPalette)])
 				cosM, sinM := math.Cos(mid), math.Sin(mid)
 				s := -sinM // 折点 y = cy + (r+ext)·s
@@ -482,7 +479,7 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 	}
 	left, right := []int{}, []int{}
 	for i, mid := range mids {
-		if math.Cos(mid) < 0 {
+		if classifySide(mid) < 0 {
 			left = append(left, i)
 		} else {
 			right = append(right, i)
@@ -500,6 +497,22 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		drawText(img, lb, 1116, y-3, 19, hexColor("404040"), 0)
 	}
 	return img
+}
+
+// classifySide 决定饼图标注放左侧还是右侧（-1 左 / 1 右）。
+// 正上方、正下方 ±~26° 区域内的扇区统一分配到固定一侧（上→右、下→左），
+// 避免 cos 符号在 ±90° 附近抖动，把两个相邻小扇区的标注分到两侧而失去防重叠约束。
+func classifySide(mid float64) float64 {
+	c, s := math.Cos(mid), math.Sin(mid)
+	switch {
+	case s < -0.9:
+		return -1.0
+	case s > 0.9:
+		return 1.0
+	case c < 0:
+		return -1.0
+	}
+	return 1.0
 }
 
 // drawLine 绘制任意方向线段（DDA 插值 + 2px 粗，用于饼图指示线）
