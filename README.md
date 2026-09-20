@@ -84,6 +84,7 @@ docker compose run --rm report -list-ds
 | `WAF_EXCEPT_IPS` | `-waf_except_ips` | 排除的 WAF 访问来源 IP，逗号分隔 | |
 | `REPORT_DIR` | `-report_dir` | 报告输出目录 | `/app/report` |
 | `REPORT_TIME` | `-report_time` | 定时模式每日触发时刻 `HH:MM` | `12:00` |
+| `REPORT_HEADER` | `-report_header` | 报告页眉文字（每页顶部居中显示） | `统筹运维项目` |
 | `REPORT_INCLUDE_BIZ` | `-report_include_biz` | 是否添加「业务巡检」章节（`1`/`true` 开启） | 不添加 |
 | `REPORT_RUN_WEEKDAYS` | `-report_run_weekdays` | 定时模式下仅在这些星期生成（`0`=周日…`6`=周六，逗号分隔） | 每天 |
 | `LOG_LEVEL` | `-log_level` | 日志等级：DEBUG / INFO / WARN / ERROR | `INFO` |

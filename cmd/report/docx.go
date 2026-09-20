@@ -30,12 +30,13 @@ type Run struct {
 
 // Docx 文档构建器
 type Docx struct {
-	body      strings.Builder
-	media     [][]byte
-	imgID     int
-	paraStyle strings.Builder // 复用的段落 XML 片段生成在内部函数
-	forceCenter bool          // Table 期间强制所有单元格居中（不受文本长度影响）
-	centerCols  map[int]bool  // Table 期间强制居中的列（按表头下标）
+	body        strings.Builder
+	media       [][]byte
+	imgID       int
+	paraStyle   strings.Builder // 复用的段落 XML 片段生成在内部函数
+	forceCenter bool            // Table 期间强制所有单元格居中（不受文本长度影响）
+	centerCols  map[int]bool    // Table 期间强制居中的列（按表头下标）
+	HeaderText  string          // 页眉文字（空则用默认值）
 }
 
 func NewDocx() *Docx {
@@ -350,11 +351,15 @@ func (d *Docx) Save(path string) error {
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
 </w:styles>`
 
+	headerText := d.HeaderText
+	if headerText == "" {
+		headerText = "统筹运维项目"
+	}
 	header := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:p><w:pPr><w:jc w:val="right"/></w:pPr>
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr>
 <w:r><w:rPr><w:rFonts w:ascii="` + fontName + `" w:eastAsia="` + fontName + `"/><w:color w:val="` + grey + `"/><w:sz w:val="17"/></w:rPr>
-<w:t>统筹运维项目</w:t></w:r></w:p></w:hdr>`
+<w:t>` + esc(headerText) + `</w:t></w:r></w:p></w:hdr>`
 
 	footer := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">

@@ -50,6 +50,7 @@ type Config struct {
 	// 其它
 	ReportDir  string
 	ReportTime string // 定时任务触发时刻 HH:MM
+	HeaderText string // 报告页眉文字
 	LogLevel   string
 	Now        bool // 立即执行一次后退出
 
@@ -135,6 +136,7 @@ func parseConfig() *Config {
 	c.WebdavPass = env("WEBDAV_PASSWORD", "")
 	c.ReportDir = env("REPORT_DIR", "./report")
 	c.ReportTime = env("REPORT_TIME", "12:00")
+	c.HeaderText = env("REPORT_HEADER", "统筹运维项目")
 	c.LogLevel = env("LOG_LEVEL", "INFO")
 	c.IncludeBiz = os.Getenv("REPORT_INCLUDE_BIZ") == "1" || strings.EqualFold(os.Getenv("REPORT_INCLUDE_BIZ"), "true")
 	c.RunWeekdays = parseWeekdays(os.Getenv("REPORT_RUN_WEEKDAYS"))
@@ -164,6 +166,7 @@ func parseConfig() *Config {
 	f.IntVar(&c.ChartTop, "chart-top", 18, "图表最多展示的主机台数，0=全部")
 	f.StringVar(&c.ReportDir, "report_dir", c.ReportDir, "报告本地输出目录")
 	f.StringVar(&c.ReportTime, "report_time", c.ReportTime, "定时模式的每日触发时刻 HH:MM")
+	f.StringVar(&c.HeaderText, "report_header", c.HeaderText, "报告页眉文字（页脚页码不变）")
 	f.StringVar(&c.LogLevel, "log_level", c.LogLevel, "日志等级：DEBUG/INFO/WARN/ERROR")
 	f.StringVar(&c.WebdavHost, "webdav_hostname", c.WebdavHost, "WebDAV 上传地址（不配则只存本地）")
 	f.StringVar(&c.WebdavLogin, "webdav_login", c.WebdavLogin, "WebDAV 账号")

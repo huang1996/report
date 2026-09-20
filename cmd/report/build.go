@@ -192,8 +192,10 @@ func BuildReport(in *BuildInput) (string, error) {
 	}
 
 	d := NewDocx()
+	d.HeaderText = cfg.HeaderText
 	d.Title(title)
-	d.MetaLine(fmt.Sprintf("巡检周期：%s　|　第 %d 周　|　生成日期：%s", period, week, time.Now().Format("2006-01-02")))
+	// 生成日期与统计周期结束日期保持一致（报告口径统一按巡检周期末日）
+	d.MetaLine(fmt.Sprintf("巡检周期：%s　|　第 %d 周　|　生成日期：%s", period, week, in.WE.Format("2006-01-02")))
 
 	// 一、报告信息
 	d.Heading(1, "1、报告信息")
