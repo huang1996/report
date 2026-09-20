@@ -307,34 +307,19 @@ func BuildReport(in *BuildInput) (string, error) {
 			det, []float64{3.2, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.4}, map[int]bool{7: true}, 9, false)
 		d.Caption("表 2　资源巡检明细（CPU / 内存 / 磁盘，均为周期内均值与峰值；资源规格与归属见下表）")
 
-		multiProj := len(projects) > 1
-		headers := []string{"IP 地址", "主机角色"}
-		widths := []float64{2.7, 3.3}
-		if multiProj {
-			headers = append(headers, "业务系统")
-			widths = append(widths, 3.1)
-		}
-		headers = append(headers, "CPU规格", "内存容量", "磁盘容量", "操作系统", "运维工程师")
-		widths = append(widths, 1.3, 1.5, 1.5, 3.0, 1.5)
+		headers := []string{"IP 地址", "主机角色", "CPU规格", "内存容量", "磁盘容量", "操作系统"}
+		widths := []float64{2.7, 3.3, 1.3, 1.5, 1.5, 3.0}
 		var own [][]string
 		for i := range rows {
 			r := &rows[i]
-			row := []string{r.IP, orDash(r.Role)}
-			if multiProj {
-				row = append(row, orDash(r.Project))
-			}
-			row = append(row, sprintf("%.0f 核", r.Cores),
+			own = append(own, []string{r.IP, orDash(r.Role),
+				sprintf("%.0f 核", r.Cores),
 				sprintf("%.0f GB", r.MemTotalGB), sprintf("%.0f GB", r.DiskCapGB),
-				orDash(r.OS), orDash(r.Engineer))
-			own = append(own, row)
+				orDash(r.OS)})
 		}
 		// 操作系统列（文本较长，默认会被判为左对齐，此处强制居中）
 		// hideEmptyCols=false：即使个别主机取不到操作系统（显示「—」），列也不隐藏
-		osIdx := 5
-		if multiProj {
-			osIdx = 6
-		}
-		d.TableCenterCols(map[int]bool{osIdx: true}, headers, own, widths, nil, 9, false)
+		d.TableCenterCols(map[int]bool{5: true}, headers, own, widths, nil, 9, false)
 		d.Caption("表 3　主机归属与资源规格")
 
 		var perf [][]string
@@ -346,11 +331,11 @@ func BuildReport(in *BuildInput) (string, error) {
 			}
 			perf = append(perf, []string{r.IP, sprintf("%.2f%%", r.DiskIO), conn,
 				sprintf("%.0f Mb/s", r.Net), sprintf("%.1f pp", r.CPUGap),
-				sprintf("%.1f pp", r.MemGap), orDash(r.Engineer)})
+				sprintf("%.1f pp", r.MemGap)})
 		}
-		d.Table([]string{"IP 地址", "磁盘 IO", "连接数", "网络使用率", "CPU峰谷差", "内存峰谷差", "运维工程师"},
-			perf, []float64{3.4, 2.2, 2.1, 2.7, 2.4, 2.4, 2.2}, nil, 9, true)
-		d.Caption("表 4　性能与网络指标明细（网络使用率为出入向流量合计；连接数取自 netstat_tcp_inuse，Windows 主机未采集该指标，以「—」表示）")
+		d.Table([]string{"IP 地址", "磁盘 IO", "连接数", "网络流量", "CPU峰谷差", "内存峰谷差"},
+			perf, []float64{3.6, 2.4, 2.3, 2.9, 2.6, 2.6}, nil, 9, true)
+		d.Caption("表 4　性能与网络指标明细（网络流量为出入向流量合计；连接数取自 netstat_tcp_inuse，Windows 主机未采集该指标，以「—」表示）")
 	}
 
 	// 五、业务巡检（内容留空，由人工填写；REPORT_INCLUDE_BIZ 控制是否添加，默认不添加）
