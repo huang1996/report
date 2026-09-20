@@ -10,6 +10,7 @@ import (
 	"image/draw"
 	"io"
 	"math"
+	"sort"
 
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
@@ -379,6 +380,8 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 	}
 
 	start := -math.Pi / 2 // 起始角：6 点方向，逐项逆时针推进（与 fillSector 的 y 翻转坐标系一致）
+	mids := make([]float64, len(items))
+	pcts := make([]float64, len(items))
 	for i, it := range items {
 		ang := it.Value / total * 2 * math.Pi
 		end := start + ang
@@ -389,30 +392,130 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 			ocy = cy - int(14*math.Sin(mid)) // 像素 y 向下，与 fillSector 的角度约定一致
 		}
 		fillSector(img, ocx, ocy, r, start, end, hexColor(chartPalette[i%len(chartPalette)]))
-		// 内部百分比
+		// 内部百分比（扇区过小时放不下，改并入外部标签文字）
 		pct := it.Value / total * 100
-		px := ocx + int(0.62*float64(r)*math.Cos(mid))
-		py := ocy - int(0.62*float64(r)*math.Sin(mid)) // 取 -sin：与扇形同一坐标系，否则标注垂直镜像落到对面扇区
-		drawText(img, sprintf("%.2f%%", pct), px, py-10, 17, hexColor("FFFFFF"), 1)
-		// 外部标签
-		lx := ocx + int(1.15*float64(r)*math.Cos(mid))
-		ly := ocy - int(1.15*float64(r)*math.Sin(mid))
-		align := 0
-		if math.Cos(mid) < 0 {
-			align = 2
+		pctInline := pct < 6.0
+		if !pctInline {
+			px := ocx + int(0.62*float64(r)*math.Cos(mid))
+			py := ocy - int(0.62*float64(r)*math.Sin(mid)) // 取 -sin：与扇形同一坐标系，否则标注垂直镜像落到对面扇区
+			drawText(img, sprintf("%.2f%%", pct), px, py-10, 17, hexColor("FFFFFF"), 1)
 		}
-		drawText(img, it.Label, lx, ly-10, 19, hexColor("404040"), align)
+		mids[i] = mid
+		pcts[i] = pct
 		start = end
 	}
+
+	// 外部标签：按左右两侧分列排布 + 纵向防重叠，并用指示线连接到对应扇区
+	const (
+		labelR   = 1.32 // 标签列相对半径
+		elbowR   = 1.18 // 折点半径
+		anchorR  = 0.97 // 扇区边缘锚点半径
+		labelTop = 160.0
+		labelBot = 820.0
+	)
+	leftCol, rightCol := []pieLabel{}, []pieLabel{}
+	for i, mid := range mids {
+		ly := float64(cy) - float64(r)*math.Sin(mid) // 与扇形同坐标系
+		if math.Cos(mid) < 0 {
+			leftCol = append(leftCol, pieLabel{i, ly})
+		} else {
+			rightCol = append(rightCol, pieLabel{i, ly})
+		}
+	}
+	layoutPieLabels(leftCol, labelTop, labelBot)
+	layoutPieLabels(rightCol, labelTop, labelBot)
+
+	lineC := hexColor("A6A6A6")
+	for _, col := range [][]pieLabel{leftCol, rightCol} {
+		for _, pl := range col {
+			mid := mids[pl.idx]
+			side, align := 1.0, 0
+			if math.Cos(mid) < 0 {
+				side, align = -1.0, 2
+			}
+			// 扇区边缘锚点 → 折点 → 标签（水平短线收尾）
+			ax := cx + int(anchorR*float64(r)*math.Cos(mid))
+			ay := cy - int(anchorR*float64(r)*math.Sin(mid))
+			ey := int(pl.y)
+			ex := cx + int(side*elbowR*float64(r))
+			lx := cx + int(side*labelR*float64(r))
+			drawLine(img, ax, ay, ex, ey, lineC)
+			drawLine(img, ex, ey, lx-int(side*10), ey, lineC)
+			label := items[pl.idx].Label
+			if pcts[pl.idx] < 6.0 { // 小扇区的百分比并入外部标签
+				label = sprintf("%s %.2f%%", label, pcts[pl.idx])
+			}
+			drawText(img, label, lx, ey-10, 19, hexColor("404040"), align)
+		}
+	}
+
 	// 图例（右侧）
 	ly0 := 240
 	for i, it := range items {
 		y := ly0 + i*44
-		fillRect(img, 1010, y, 1026, y+16, hexColor(chartPalette[i%len(chartPalette)]))
+		fillRect(img, 1090, y, 1106, y+16, hexColor(chartPalette[i%len(chartPalette)]))
 		lb := sprintf("%s（%s）", it.Label, fmtNum(it.Value))
-		drawText(img, lb, 1036, y-3, 19, hexColor("404040"), 0)
+		drawText(img, lb, 1116, y-3, 19, hexColor("404040"), 0)
 	}
 	return img
+}
+
+// pieLabel 饼图外部标签布局项：idx 指向 items 下标，y 为标签中心线纵坐标
+type pieLabel struct {
+	idx int
+	y   float64
+}
+
+// layoutPieLabels 纵向防重叠：按 y 排序后保证最小间距，再整体约束到 [top, bottom]
+func layoutPieLabels(ls []pieLabel, top, bottom float64) {
+	const minGap = 32.0
+	if len(ls) == 0 {
+		return
+	}
+	sort.Slice(ls, func(i, j int) bool { return ls[i].y < ls[j].y })
+	for i := 1; i < len(ls); i++ {
+		if ls[i].y-ls[i-1].y < minGap {
+			ls[i].y = ls[i-1].y + minGap
+		}
+	}
+	if over := ls[len(ls)-1].y - bottom; over > 0 {
+		for i := range ls {
+			ls[i].y -= over
+		}
+	}
+	if ls[0].y < top {
+		off := top - ls[0].y
+		for i := range ls {
+			ls[i].y += off
+		}
+	}
+}
+
+// drawLine 绘制任意方向线段（DDA 插值 + 2px 粗，用于饼图指示线）
+func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
+	dx, dy := x1-x0, y1-y0
+	steps := dx
+	if steps < 0 {
+		steps = -steps
+	}
+	if dy < 0 && -dy > steps {
+		steps = -dy
+	} else if dy > steps {
+		steps = dy
+	}
+	if steps == 0 {
+		img.Set(x0, y0, c)
+		return
+	}
+	for i := 0; i <= steps; i++ {
+		x := x0 + dx*i/steps
+		y := y0 + dy*i/steps
+		for ox := 0; ox < 2; ox++ {
+			for oy := 0; oy < 2; oy++ {
+				img.Set(x+ox, y+oy, c)
+			}
+		}
+	}
 }
 
 func fillSector(img *image.RGBA, cx, cy, r int, a0, a1 float64, c color.RGBA) {
