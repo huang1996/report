@@ -405,49 +405,90 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		start = end
 	}
 
-	// 外部标签：按左右两侧分列排布 + 纵向防重叠，并用指示线连接到对应扇区
+	// 外部标签：指示线从扇区弧中点沿半径伸出，折一次后第二段水平连到标签，
+	// 线段与文字均取所指向扇区的颜色。同侧标签按离圆心远近排序，
+	// 通过径向延伸长度纵向拉开（同侧相邻折点间距 ≥ minGap），避免重叠。
 	const (
-		labelR   = 1.32 // 标签列相对半径
-		elbowR   = 1.18 // 折点半径
-		anchorR  = 0.97 // 扇区边缘锚点半径
-		labelTop = 160.0
-		labelBot = 820.0
+		labelR = 1.32  // 标签列相对半径
+		minGap = 32.0  // 同侧相邻标签最小纵向间距
+		minExt = 12.0  // 径向段最小延伸长度（像素）
+		maxExt = 220.0 // 径向段最大延伸长度
 	)
-	leftCol, rightCol := []pieLabel{}, []pieLabel{}
+	drawCol := func(inds []int) {
+		if len(inds) == 0 {
+			return
+		}
+		// 按上/下半圆分组，各自从靠近圆心的一端向外排序
+		var above, below []int
+		for _, i := range inds {
+			if math.Sin(mids[i]) > 0 {
+				above = append(above, i)
+			} else {
+				below = append(below, i)
+			}
+		}
+		sort.Slice(above, func(a, b int) bool { return math.Sin(mids[above[a]]) < math.Sin(mids[above[b]]) })
+		sort.Slice(below, func(a, b int) bool { return math.Sin(mids[below[a]]) > math.Sin(mids[below[b]]) })
+		for _, group := range [][]int{above, below} {
+			prev := math.NaN()
+			for _, i := range group {
+				mid := mids[i]
+				side, align := 1.0, 0
+				if math.Cos(mid) < 0 {
+					side, align = -1.0, 2
+				}
+				c := hexColor(chartPalette[i%len(chartPalette)])
+				cosM, sinM := math.Cos(mid), math.Sin(mid)
+				s := -sinM // 折点 y = cy + (r+ext)·s
+				// 使折点落在自然延伸位置，若与上一个标签间距不足则向外推
+				desired := float64(cy) + (float64(r)+minExt)*s
+				fy := desired
+				if !math.IsNaN(prev) {
+					if s > 0 { // 下半圆：只能向下推
+						if fy < prev+minGap {
+							fy = prev + minGap
+						}
+					} else { // 上半圆：只能向上推
+						if fy > prev-minGap {
+							fy = prev - minGap
+						}
+					}
+				}
+				ext := minExt
+				if math.Abs(s) > 1e-6 {
+					ext = (fy - float64(cy))/s - float64(r)
+				}
+				if ext > maxExt {
+					ext = maxExt
+					fy = float64(cy) + (float64(r)+ext)*s
+				}
+				prev = fy
+				// 弧中点（扇区边缘）→ 折点：沿半径方向伸出
+				ax := float64(cx) + (float64(r)-2)*cosM
+				ay := float64(cy) - (float64(r)-2)*sinM
+				fx := float64(cx) + (float64(r)+ext)*cosM
+				// 折点 → 标签：水平段
+				lx := cx + int(side*labelR*float64(r))
+				drawLine(img, int(ax), int(ay), int(fx), int(fy), c)
+				drawLine(img, int(fx), int(fy), lx-int(side*10), int(fy), c)
+				label := items[i].Label
+				if pcts[i] < 6.0 { // 小扇区的百分比并入外部标签
+					label = sprintf("%s %.2f%%", label, pcts[i])
+				}
+				drawText(img, label, lx, int(fy)-10, 19, c, align)
+			}
+		}
+	}
+	left, right := []int{}, []int{}
 	for i, mid := range mids {
-		ly := float64(cy) - float64(r)*math.Sin(mid) // 与扇形同坐标系
 		if math.Cos(mid) < 0 {
-			leftCol = append(leftCol, pieLabel{i, ly})
+			left = append(left, i)
 		} else {
-			rightCol = append(rightCol, pieLabel{i, ly})
+			right = append(right, i)
 		}
 	}
-	layoutPieLabels(leftCol, labelTop, labelBot)
-	layoutPieLabels(rightCol, labelTop, labelBot)
-
-	lineC := hexColor("A6A6A6")
-	for _, col := range [][]pieLabel{leftCol, rightCol} {
-		for _, pl := range col {
-			mid := mids[pl.idx]
-			side, align := 1.0, 0
-			if math.Cos(mid) < 0 {
-				side, align = -1.0, 2
-			}
-			// 扇区边缘锚点 → 折点 → 标签（水平短线收尾）
-			ax := cx + int(anchorR*float64(r)*math.Cos(mid))
-			ay := cy - int(anchorR*float64(r)*math.Sin(mid))
-			ey := int(pl.y)
-			ex := cx + int(side*elbowR*float64(r))
-			lx := cx + int(side*labelR*float64(r))
-			drawLine(img, ax, ay, ex, ey, lineC)
-			drawLine(img, ex, ey, lx-int(side*10), ey, lineC)
-			label := items[pl.idx].Label
-			if pcts[pl.idx] < 6.0 { // 小扇区的百分比并入外部标签
-				label = sprintf("%s %.2f%%", label, pcts[pl.idx])
-			}
-			drawText(img, label, lx, ey-10, 19, hexColor("404040"), align)
-		}
-	}
+	drawCol(left)
+	drawCol(right)
 
 	// 图例（右侧）
 	ly0 := 240
@@ -458,37 +499,6 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		drawText(img, lb, 1116, y-3, 19, hexColor("404040"), 0)
 	}
 	return img
-}
-
-// pieLabel 饼图外部标签布局项：idx 指向 items 下标，y 为标签中心线纵坐标
-type pieLabel struct {
-	idx int
-	y   float64
-}
-
-// layoutPieLabels 纵向防重叠：按 y 排序后保证最小间距，再整体约束到 [top, bottom]
-func layoutPieLabels(ls []pieLabel, top, bottom float64) {
-	const minGap = 32.0
-	if len(ls) == 0 {
-		return
-	}
-	sort.Slice(ls, func(i, j int) bool { return ls[i].y < ls[j].y })
-	for i := 1; i < len(ls); i++ {
-		if ls[i].y-ls[i-1].y < minGap {
-			ls[i].y = ls[i-1].y + minGap
-		}
-	}
-	if over := ls[len(ls)-1].y - bottom; over > 0 {
-		for i := range ls {
-			ls[i].y -= over
-		}
-	}
-	if ls[0].y < top {
-		off := top - ls[0].y
-		for i := range ls {
-			ls[i].y += off
-		}
-	}
 }
 
 // drawLine 绘制任意方向线段（DDA 插值 + 2px 粗，用于饼图指示线）
