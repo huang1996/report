@@ -378,7 +378,7 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		return img
 	}
 
-	start := -math.Pi / 2 // 12 点方向起，顺时针
+	start := -math.Pi / 2 // 起始角：6 点方向，逐项逆时针推进（与 fillSector 的 y 翻转坐标系一致）
 	for i, it := range items {
 		ang := it.Value / total * 2 * math.Pi
 		end := start + ang
@@ -386,17 +386,17 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		ocx, ocy := cx, cy
 		if i == 0 { // 第一块外扩强调
 			ocx = cx + int(14*math.Cos(mid))
-			ocy = cy + int(14*math.Sin(mid))
+			ocy = cy - int(14*math.Sin(mid)) // 像素 y 向下，与 fillSector 的角度约定一致
 		}
 		fillSector(img, ocx, ocy, r, start, end, hexColor(chartPalette[i%len(chartPalette)]))
 		// 内部百分比
 		pct := it.Value / total * 100
 		px := ocx + int(0.62*float64(r)*math.Cos(mid))
-		py := ocy + int(0.62*float64(r)*math.Sin(mid))
+		py := ocy - int(0.62*float64(r)*math.Sin(mid)) // 取 -sin：与扇形同一坐标系，否则标注垂直镜像落到对面扇区
 		drawText(img, sprintf("%.2f%%", pct), px, py-10, 17, hexColor("FFFFFF"), 1)
 		// 外部标签
 		lx := ocx + int(1.15*float64(r)*math.Cos(mid))
-		ly := ocy + int(1.15*float64(r)*math.Sin(mid))
+		ly := ocy - int(1.15*float64(r)*math.Sin(mid))
 		align := 0
 		if math.Cos(mid) < 0 {
 			align = 2
