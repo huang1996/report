@@ -193,6 +193,12 @@ func resolveWindows(cfg *Config, now time.Time) []window {
 		s = day(beg)
 		e = dayEnd(beg.AddDate(0, 0, 6))
 	}
+	// 结束时间晚于当前时间时，以当前时间为准：
+	// 未来时段尚无数据，保留会稀释采样率统计、且瞬时指标查询为空
+	if e.After(now) {
+		log.Infof("结束时间晚于当前时间，已按当前时间截断：%s", now.Format("2006-01-02 15:04:05"))
+		e = now
+	}
 	if !s.Before(e) {
 		log.Errorf("起始时间必须早于结束时间。")
 		return nil
