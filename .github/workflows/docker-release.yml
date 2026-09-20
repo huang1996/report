@@ -124,6 +124,8 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 完整历史，供生成变更明细
 
       - name: 下载构建产物
         uses: actions/download-artifact@v4
@@ -163,3 +165,23 @@ jobs:
 
             各平台二进制同样已注入版本号，运行 `inspection-report -version` 可验证。
           # 如需手动补充更新内容，直接在 GitHub Release 页面编辑即可
+
+      # GitHub 自动生成的变更日志基于 PR（本仓库直推 main、无 PR），只会输出
+      # 一行 Full Changelog 对比链接。这里改为用 git log 生成提交级变更明细追加。
+      - name: 追加提交级变更明细（自上一标签以来的全部提交）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then RANGE="$PREV..${TAG}"; else RANGE="${TAG}"; fi
+          echo "变更范围：$RANGE"
+          {
+            echo ""
+            echo "### 变更明细"
+            echo ""
+            git log "$RANGE" --no-decorate --format='- `%h` %s'
+          } >> changelog.md
+          gh release view "$TAG" --json body -q .body > body.md
+          cat changelog.md >> body.md
+          gh release edit "$TAG" --notes-file body.md
