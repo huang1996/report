@@ -182,32 +182,44 @@ func rotateImg(src *image.RGBA, deg float64) *image.RGBA {
 	return dst
 }
 
+// strokeW 辅助线笔宽（像素）；柱状图超采样渲染时调大以保持视觉线宽，
+// 虚线/点线的段长与间距随之等比放大。
+var strokeW = 1
+
 func vline(img *image.RGBA, x, y0, y1 int, c color.RGBA) {
-	for y := y0; y <= y1; y++ {
-		img.Set(x, y, c)
+	for dx := 0; dx < strokeW; dx++ {
+		for y := y0; y <= y1; y++ {
+			img.Set(x+dx, y, c)
+		}
 	}
 }
 
 func hline(img *image.RGBA, y, x0, x1 int, c color.RGBA) {
-	for x := x0; x <= x1; x++ {
-		img.Set(x, y, c)
+	for dy := 0; dy < strokeW; dy++ {
+		for x := x0; x <= x1; x++ {
+			img.Set(x, y+dy, c)
+		}
 	}
 }
 
-// 虚线（线段 12px 间隔 8px）
+// 虚线（线段 12px 间隔 8px，随笔宽等比放大）
 func dashH(img *image.RGBA, y, x0, x1 int, c color.RGBA) {
-	for x := x0; x <= x1; x += 20 {
-		for i := 0; i < 12 && x+i <= x1; i++ {
-			img.Set(x+i, y, c)
-			img.Set(x+i, y+1, c)
+	seg, gap := 12*strokeW, 8*strokeW
+	for x := x0; x <= x1; x += seg + gap {
+		for i := 0; i < seg && x+i <= x1; i++ {
+			for dy := 0; dy < 2*strokeW; dy++ {
+				img.Set(x+i, y+dy, c)
+			}
 		}
 	}
 }
 
 // 点状网格线
 func dotH(img *image.RGBA, y, x0, x1 int, c color.RGBA) {
-	for x := x0; x <= x1; x += 6 {
-		img.Set(x, y, c)
+	for x := x0; x <= x1; x += 6 * strokeW {
+		for dy := 0; dy < strokeW; dy++ {
+			img.Set(x, y+dy, c)
+		}
 	}
 }
 
@@ -231,8 +243,16 @@ type BarSeries struct {
 func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
 	warnLine float64, warnText, ylabel string, ymaxOverride float64) image.Image {
 
-	const W, H = 1960, 800
-	const left, right, top, bottom = 110, 50, 95, 120
+	// 2x 超采样渲染：画布与全部坐标/字号乘 S，插入文档后显示尺寸不变，
+	// 有效像素密度翻倍（与饼图一致），避免缩略图式模糊
+	const S = 2
+	const W, H = 1960 * S, 800 * S
+	const left, right, top, bottom = 110 * S, 50 * S, 95 * S, 120 * S
+	// 辅助线（网格/坐标轴/预警线）笔宽同步放大，保持与放大前一致的视觉粗细
+	oldStroke := strokeW
+	strokeW = S
+	defer func() { strokeW = oldStroke }()
+
 	img := image.NewRGBA(image.Rect(0, 0, W, H))
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 
@@ -265,7 +285,7 @@ func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
 		y := yOf(v)
 		dotH(img, y, left, W-right, grey)
 		lb := fmtNum(v)
-		drawText(img, lb, left-10, y-10, 17, txtC, 2)
+		drawText(img, lb, left-10*S, y-10*S, 17*S, txtC, 2)
 	}
 
 	// 坐标轴
@@ -279,7 +299,7 @@ func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
 
 	groupW := float64(plotW) / float64(n)
 	k := len(series)
-	barGap := 4
+	barGap := 4 * S
 	barW := (groupW*0.68 - float64((k-1)*barGap)) / float64(k)
 	if barW < 2 {
 		barW = 2
@@ -300,7 +320,7 @@ func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
 			} else {
 				lb = fmtNum(v)
 			}
-			drawText(img, lb, x0+int(barW)/2, y0-22, 15, txtC, 1)
+			drawText(img, lb, x0+int(barW)/2, y0-22*S, 15*S, txtC, 1)
 		}
 	}
 
@@ -310,7 +330,7 @@ func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
 		if yw > top && yw < top+plotH {
 			red := hexColor("C00000")
 			dashH(img, yw, left, W-right, red)
-			drawText(img, warnText, W-right-8, yw-24, 17, red, 2)
+			drawText(img, warnText, W-right-8*S, yw-24*S, 17*S, red, 2)
 		}
 	}
 
@@ -319,26 +339,26 @@ func DrawGroupedBarChart(title string, labels []string, series []BarSeries,
 	for gi := 0; gi < n; gi++ {
 		cx := int(float64(left) + groupW*float64(gi) + groupW/2)
 		if n > 10 {
-			rot := rotateImg(renderLabel(labels[gi], 18, labC), 30)
+			rot := rotateImg(renderLabel(labels[gi], 18*S, labC), 30)
 			b := rot.Bounds()
-			draw.Draw(img, image.Rect(cx-b.Dx()+6, top+plotH+8, cx+6, top+plotH+8+b.Dy()),
+			draw.Draw(img, image.Rect(cx-b.Dx()+6*S, top+plotH+8*S, cx+6*S, top+plotH+8*S+b.Dy()),
 				rot, image.Point{}, draw.Over)
 		} else {
-			drawText(img, labels[gi], cx, top+plotH+10, 19, labC, 1)
+			drawText(img, labels[gi], cx, top+plotH+10*S, 19*S, labC, 1)
 		}
 	}
 
 	// 标题 / 图例 / 单位说明
 	navy := hexColor("1F3864")
-	drawText(img, title, W/2, 22, 25, navy, 1)
-	lx := left + 10
+	drawText(img, title, W/2, 22*S, 25*S, navy, 1)
+	lx := left + 10*S
 	for _, s := range series {
-		fillRect(img, lx, 62, lx+16, 78, hexColor(s.Color))
-		drawText(img, s.Name, lx+24, 60, 19, txtC, 0)
-		lx += 24 + textWidth(s.Name, 19) + 30
+		fillRect(img, lx, 62*S, lx+16*S, 78*S, hexColor(s.Color))
+		drawText(img, s.Name, lx+24*S, 60*S, 19*S, txtC, 0)
+		lx += 24*S + textWidth(s.Name, 19*S) + 30*S
 	}
 	if ylabel != "" {
-		drawText(img, "单位："+ylabel, W-right-8, 60, 17, hexColor("808080"), 2)
+		drawText(img, "单位："+ylabel, W-right-8*S, 60*S, 17*S, hexColor("808080"), 2)
 	}
 	return img
 }
@@ -359,18 +379,22 @@ type PieItem struct {
 	Value float64
 }
 
-// DrawPieChart 饼图（对应原脚本 get_attack_total_by_type 的攻击类型统计图）
+// DrawPieChart 饼图（对应原脚本 get_attack_total_by_type 的攻击类型统计图）。
+// 2x 超采样渲染：docx 中按固定 cm 宽插入，像素翻倍后显示尺寸不变、清晰度提升。
 func DrawPieChart(title string, items []PieItem) image.Image {
-	const W, H = 1400, 900
+	const S = 2
+	linePen = 2 * S // 指示线笔宽同步放大
+	defer func() { linePen = 2 }()
+	W, H := 1400*S, 900*S
 	img := image.NewRGBA(image.Rect(0, 0, W, H))
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 
-	drawText(img, title, W/2, 26, 28, hexColor("1F3864"), 1)
+	drawText(img, title, W/2, 26*S, 30*S, hexColor("1F3864"), 1)
 	if len(items) == 0 {
 		return img
 	}
 
-	cx, cy, r := 560, 490, 300
+	cx, cy, r := 560*S, 490*S, 300*S
 	total := 0.0
 	for _, it := range items {
 		total += it.Value
@@ -388,8 +412,8 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		mid := start + ang/2
 		ocx, ocy := cx, cy
 		if i == 0 { // 第一块外扩强调
-			ocx = cx + int(14*math.Cos(mid))
-			ocy = cy - int(14*math.Sin(mid)) // 像素 y 向下，与 fillSector 的角度约定一致
+			ocx = cx + int(14*S*math.Cos(mid))
+			ocy = cy - int(14*S*math.Sin(mid)) // 像素 y 向下，与 fillSector 的角度约定一致
 		}
 		fillSector(img, ocx, ocy, r, start, end, hexColor(chartPalette[i%len(chartPalette)]))
 		// 占比统一放在外部文本标注中，扇区内不再绘制百分比
@@ -399,15 +423,18 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		start = end
 	}
 
-	// 外部文本标注：饼图内不显示占比，文字（名称+占比）落在第二段水平线段上，
-	// 线段长度按文字宽度自动撑开；同侧标签按离圆心远近排序并拉开间隔，避免重叠。
+	// 外部文本标注：饼图内不显示占比，文字（名称+占比）落在第二段水平线段上；
+	// 左列标注统一左对齐、右列标注统一右对齐（固定列锚点），同侧纵向拉开间隔避免重叠。
 	const (
-		padX      = 14.0  // 文字与水平段两端的留白
-		minGap    = 34.0  // 同侧相邻标注最小纵向间距
-		minExt    = 12.0  // 径向段最小延伸长度（像素）
-		maxExt    = 220.0 // 径向段最大延伸长度
-		labelMinX = 15.0  // 左侧标注可延伸的最小 x
-		labelMaxX = 1075.0 // 右侧标注可延伸的最大 x（避开右侧图例）
+		labelSize = 22.0 * S   // 标注文字字号
+		labelTop  = 27.0 * S   // 文字绘制点相对线段上移量
+		backTop   = 31.0 * S   // 白色衬底上边界相对线段上移量
+		backBot   = 4.0 * S    // 白色衬底下边界相对线段上移量（留出线段作下划线）
+		minGap    = 38.0 * S   // 同侧相邻标注最小纵向间距
+		minExt    = 40.0 * S   // 径向段最小延伸长度（像素）；同时保证 |sin|≥0.9 的折点落在饼外，水平段不穿饼
+		maxExt    = 220.0 * S  // 径向段最大延伸长度
+		colLeftX  = 80.0 * S   // 左列文字左对齐锚点（左侧页边距）
+		colRightX = 1060.0 * S // 右列文字右对齐锚点（避开右侧图例）
 	)
 	drawCol := func(inds []int) {
 		if len(inds) == 0 {
@@ -456,25 +483,37 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 				}
 				prev = fy
 				// 弧中点（扇区边缘）→ 折点：沿半径方向伸出
-				ax := float64(cx) + (float64(r)-2)*cosM
-				ay := float64(cy) - (float64(r)-2)*sinM
+				ax := float64(cx) + (float64(r)-2*float64(S))*cosM
+				ay := float64(cy) - (float64(r)-2*float64(S))*sinM
 				fx := float64(cx) + (float64(r)+ext)*cosM
-				// 折点 → 水平段：长度按文字宽度撑开，文字居中落在该段上
+				// 折点 → 水平段：延伸到列锚点（左列文字左对齐、右列文字右对齐）
 				label := sprintf("%s %.2f%%", items[i].Label, pcts[i])
-				tw := float64(textWidth(label, 19))
-				ex := fx + side*(tw+2*padX)
-				if side > 0 && ex > labelMaxX {
-					ex = labelMaxX
+				tw := float64(textWidth(label, labelSize))
+				ex := colLeftX
+				if side > 0 {
+					ex = colRightX
 				}
-				if side < 0 && ex < labelMinX {
-					ex = labelMinX
+				// 罕见情形：折点已在锚点外侧（近 3 点方向且 ext 被推大），线段改为向外短延伸
+				if side > 0 && fx > ex {
+					ex = fx + 12*S
+				}
+				if side < 0 && fx < ex {
+					ex = fx - 12*S
 				}
 				drawLine(img, int(ax), int(ay), int(fx), int(fy), c)
 				drawLine(img, int(fx), int(fy), int(ex), int(fy), c)
-				// 文字居中落在水平段上（线段作下划线），加白色衬底保证压住扇区边缘时仍清晰
-				tx := int((fx+ex)/2) - int(tw)/2
-				fillRect(img, tx-4, int(fy)-27, tx+int(tw)+4, int(fy)-7, hexColor("FFFFFF"))
-				drawText(img, label, int((fx+ex)/2), int(fy)-24, 19, c, 1)			}
+				// 文字对齐落位：白色衬底防压扇区边缘（衬底底边在线段上方，线段保持可见作下划线）
+				var tx int
+				align := 0
+				if side > 0 {
+					tx = int(ex) - int(tw)
+					align = 2
+				} else {
+					tx = int(ex)
+				}
+				fillRect(img, tx-4*S, int(fy)-int(backTop), tx+int(tw)+4*S, int(fy)-int(backBot), hexColor("FFFFFF"))
+				drawText(img, label, int(ex), int(fy)-int(labelTop), labelSize, c, align)
+			}
 		}
 	}
 	left, right := []int{}, []int{}
@@ -489,12 +528,12 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 	drawCol(right)
 
 	// 图例（右侧）
-	ly0 := 240
+	ly0 := 240 * S
 	for i, it := range items {
-		y := ly0 + i*44
-		fillRect(img, 1090, y, 1106, y+16, hexColor(chartPalette[i%len(chartPalette)]))
+		y := ly0 + i*44*S
+		fillRect(img, 1090*S, y, 1106*S, y+16*S, hexColor(chartPalette[i%len(chartPalette)]))
 		lb := sprintf("%s（%s）", it.Label, fmtNum(it.Value))
-		drawText(img, lb, 1116, y-3, 19, hexColor("404040"), 0)
+		drawText(img, lb, 1116*S, y-3*S, 21*S, hexColor("404040"), 0)
 	}
 	return img
 }
@@ -515,7 +554,10 @@ func classifySide(mid float64) float64 {
 	return 1.0
 }
 
-// drawLine 绘制任意方向线段（DDA 插值 + 2px 粗，用于饼图指示线）
+// linePen 指示线笔宽（像素）；饼图超采样渲染时调大以保持视觉线宽
+var linePen = 2
+
+// drawLine 绘制任意方向线段（DDA 插值，用于饼图指示线）
 func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
 	dx, dy := x1-x0, y1-y0
 	steps := dx
@@ -534,8 +576,8 @@ func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
 	for i := 0; i <= steps; i++ {
 		x := x0 + dx*i/steps
 		y := y0 + dy*i/steps
-		for ox := 0; ox < 2; ox++ {
-			for oy := 0; oy < 2; oy++ {
+		for ox := 0; ox < linePen; ox++ {
+			for oy := 0; oy < linePen; oy++ {
 				img.Set(x+ox, y+oy, c)
 			}
 		}
