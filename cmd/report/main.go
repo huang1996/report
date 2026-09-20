@@ -186,8 +186,9 @@ func resolveWindows(cfg *Config, now time.Time) []window {
 			}
 			beg = today.AddDate(0, 0, -(offset + 6))
 		} else {
-			// 巡检周（周六 ~ 周五）
-			beg = today.AddDate(0, 0, -int(today.Weekday()+2)%7)
+			// 巡检周（周六 ~ 周五）：取当前所在的巡检周「上周六 ~ 这周五」
+			// 注意 Go 的 Weekday() 周日=0（Python weekday() 周一=0），距上周六的天数 = (Weekday+1)%7
+			beg = today.AddDate(0, 0, -int(today.Weekday()+1)%7)
 		}
 		s = day(beg)
 		e = dayEnd(beg.AddDate(0, 0, 6))
