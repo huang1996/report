@@ -204,6 +204,11 @@ func osDisplay(m map[string]string) string {
 // fetchOS 拉取各主机操作系统（system_info 指标标签；缺失时返回空映射，不阻断报告）
 func (c *N9EClient) fetchOS(ts int64) map[string]string {
 	out := map[string]string{}
+	// 瞬时查询只回溯时间点前 5 分钟内的样本：巡检窗口结束时间在未来时
+	// （如生成当前所在巡检周报告）按结束时间查必然为空，改用当前时间查询
+	if now := time.Now().Unix(); ts > now {
+		ts = now
+	}
 	res, err := c.QueryInstant("system_info", ts)
 	if err != nil {
 		log.Debugf("system_info 查询失败（%v），表 3 操作系统列将留空。", err)

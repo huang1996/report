@@ -329,11 +329,12 @@ func BuildReport(in *BuildInput) (string, error) {
 			own = append(own, row)
 		}
 		// 操作系统列（文本较长，默认会被判为左对齐，此处强制居中）
+		// hideEmptyCols=false：即使个别主机取不到操作系统（显示「—」），列也不隐藏
 		osIdx := 6
 		if multiProj {
 			osIdx = 7
 		}
-		d.TableCenterCols(map[int]bool{osIdx: true}, headers, own, widths, nil, 9, true)
+		d.TableCenterCols(map[int]bool{osIdx: true}, headers, own, widths, nil, 9, false)
 		d.Caption("表 3　主机归属与资源规格")
 
 		var perf [][]string
