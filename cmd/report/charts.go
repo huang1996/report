@@ -392,27 +392,22 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 			ocy = cy - int(14*math.Sin(mid)) // 像素 y 向下，与 fillSector 的角度约定一致
 		}
 		fillSector(img, ocx, ocy, r, start, end, hexColor(chartPalette[i%len(chartPalette)]))
-		// 内部百分比（扇区过小时放不下，改并入外部标签文字）
+		// 占比统一放在外部文本标注中，扇区内不再绘制百分比
 		pct := it.Value / total * 100
-		pctInline := pct < 6.0
-		if !pctInline {
-			px := ocx + int(0.62*float64(r)*math.Cos(mid))
-			py := ocy - int(0.62*float64(r)*math.Sin(mid)) // 取 -sin：与扇形同一坐标系，否则标注垂直镜像落到对面扇区
-			drawText(img, sprintf("%.2f%%", pct), px, py-10, 17, hexColor("FFFFFF"), 1)
-		}
 		mids[i] = mid
 		pcts[i] = pct
 		start = end
 	}
 
-	// 外部标签：指示线从扇区弧中点沿半径伸出，折一次后第二段水平连到标签，
-	// 线段与文字均取所指向扇区的颜色。同侧标签按离圆心远近排序，
-	// 通过径向延伸长度纵向拉开（同侧相邻折点间距 ≥ minGap），避免重叠。
+	// 外部文本标注：饼图内不显示占比，文字（名称+占比）落在第二段水平线段上，
+	// 线段长度按文字宽度自动撑开；同侧标签按离圆心远近排序并拉开间隔，避免重叠。
 	const (
-		labelR = 1.32  // 标签列相对半径
-		minGap = 32.0  // 同侧相邻标签最小纵向间距
-		minExt = 12.0  // 径向段最小延伸长度（像素）
-		maxExt = 220.0 // 径向段最大延伸长度
+		padX      = 14.0  // 文字与水平段两端的留白
+		minGap    = 34.0  // 同侧相邻标注最小纵向间距
+		minExt    = 12.0  // 径向段最小延伸长度（像素）
+		maxExt    = 220.0 // 径向段最大延伸长度
+		labelMinX = 15.0  // 左侧标注可延伸的最小 x
+		labelMaxX = 1075.0 // 右侧标注可延伸的最大 x（避开右侧图例）
 	)
 	drawCol := func(inds []int) {
 		if len(inds) == 0 {
@@ -433,14 +428,14 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 			prev := math.NaN()
 			for _, i := range group {
 				mid := mids[i]
-				side, align := 1.0, 0
+				side := 1.0
 				if math.Cos(mid) < 0 {
-					side, align = -1.0, 2
+					side = -1.0
 				}
 				c := hexColor(chartPalette[i%len(chartPalette)])
 				cosM, sinM := math.Cos(mid), math.Sin(mid)
 				s := -sinM // 折点 y = cy + (r+ext)·s
-				// 使折点落在自然延伸位置，若与上一个标签间距不足则向外推
+				// 使折点落在自然延伸位置，若与上一个标注间距不足则向外推
 				desired := float64(cy) + (float64(r)+minExt)*s
 				fy := desired
 				if !math.IsNaN(prev) {
@@ -467,16 +462,22 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 				ax := float64(cx) + (float64(r)-2)*cosM
 				ay := float64(cy) - (float64(r)-2)*sinM
 				fx := float64(cx) + (float64(r)+ext)*cosM
-				// 折点 → 标签：水平段
-				lx := cx + int(side*labelR*float64(r))
-				drawLine(img, int(ax), int(ay), int(fx), int(fy), c)
-				drawLine(img, int(fx), int(fy), lx-int(side*10), int(fy), c)
-				label := items[i].Label
-				if pcts[i] < 6.0 { // 小扇区的百分比并入外部标签
-					label = sprintf("%s %.2f%%", label, pcts[i])
+				// 折点 → 水平段：长度按文字宽度撑开，文字居中落在该段上
+				label := sprintf("%s %.2f%%", items[i].Label, pcts[i])
+				tw := float64(textWidth(label, 19))
+				ex := fx + side*(tw+2*padX)
+				if side > 0 && ex > labelMaxX {
+					ex = labelMaxX
 				}
-				drawText(img, label, lx, int(fy)-10, 19, c, align)
-			}
+				if side < 0 && ex < labelMinX {
+					ex = labelMinX
+				}
+				drawLine(img, int(ax), int(ay), int(fx), int(fy), c)
+				drawLine(img, int(fx), int(fy), int(ex), int(fy), c)
+				// 文字居中落在水平段上（线段作下划线），加白色衬底保证压住扇区边缘时仍清晰
+				tx := int((fx+ex)/2) - int(tw)/2
+				fillRect(img, tx-4, int(fy)-27, tx+int(tw)+4, int(fy)-7, hexColor("FFFFFF"))
+				drawText(img, label, int((fx+ex)/2), int(fy)-24, 19, c, 1)			}
 		}
 	}
 	left, right := []int{}, []int{}
