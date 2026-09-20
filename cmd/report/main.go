@@ -40,6 +40,10 @@ func main() {
 
 	setupLogger(cfg.LogLevel)
 	log.Infof("%s %s 启动", AppName, Version())
+	if len(cfg.UnparsedArgs) > 0 {
+		log.Warnf("以下参数未被识别、已忽略：%s（布尔参数请写 -flag 或 -flag=true）",
+			strings.Join(cfg.UnparsedArgs, " "))
+	}
 	log.Debugf("配置加载完成：n9e=%s ds=%s project=%s db=%s",
 		cfg.Base, cfg.DS, cfg.Project, maskURL(cfg.DatabaseURL))
 
@@ -305,12 +309,12 @@ func collectWaf(cfg *Config, ws, we time.Time) (*WafData, string) {
 func demoRows() []HostRow {
 	seed := []struct {
 		ip, section, proj, role, eng, os string
-		cores                        float64
-		cpu, cpuP, mem, memP, disk   float64
-		memGB, diskGB                float64
-		io, net, netP                float64
-		conn                         float64
-		noConn                       bool
+		cores                            float64
+		cpu, cpuP, mem, memP, disk       float64
+		memGB, diskGB                    float64
+		io, net, netP                    float64
+		conn                             float64
+		noConn                           bool
 	}{
 		{"192.168.30.105", "大数据生产区", "天地图政务版", "Web前端1", "邹源", "Ubuntu 22.04", 8, 23.1, 61.2, 46.5, 72.3, 55.1, 16, 200, 12.4, 88.3, 210.5, 432, false},
 		{"192.168.30.106", "大数据生产区", "天地图政务版", "Web前端2", "邹源", "Ubuntu 22.04", 8, 21.8, 58.7, 44.2, 70.1, 51.6, 16, 200, 10.9, 82.1, 198.3, 398, false},
@@ -327,7 +331,7 @@ func demoRows() []HostRow {
 	rows := make([]HostRow, 0, len(seed))
 	for _, s := range seed {
 		rows = append(rows, HostRow{
-			Ident: "0-0-" + s.ip + "-" + s.section + "-" + s.proj + "-" + s.role + "-" + s.eng,
+			Ident:  "0-0-" + s.ip + "-" + s.section + "-" + s.proj + "-" + s.role + "-" + s.eng,
 			Tenant: "000000", IP: s.ip, Section: s.section, Project: s.proj, Role: s.role, Engineer: s.eng,
 			Cores: s.cores, CPU: s.cpu, CPUPeak: s.cpuP, MemTotalGB: s.memGB, Mem: s.mem, MemPeak: s.memP,
 			DiskCapGB: s.diskGB, Disk: s.disk, DiskPeak: s.disk, DiskIO: s.io,
@@ -398,6 +402,19 @@ func runOnce(cfg *Config, ws, we time.Time) {
 		} else {
 			rows = res
 			srcDesc = fmt.Sprintf("夜莺监控 n9e（%s，数据源 #%s）", cfg.Base, ds)
+		}
+		// 周期内无数据（采集失败 / 无主机 / 指标全零）时，按该数据源最新数据伪造（-fake_when_empty）
+		if cfg.FakeWhenEmpty && !n9eHasData(rows) {
+			faked, ferr := fakeRows(cfg, cli, ds)
+			if ferr != nil {
+				log.Errorf("周期内无数据，伪造数据失败：%v", ferr)
+			} else {
+				rows = faked
+				srcDesc = fmt.Sprintf("夜莺监控 n9e（%s，数据源 #%s）", cfg.Base, ds)
+				log.Warnf("本周期（%s ~ %s）n9e 无可用数据，已按数据源 #%s 的最新数据随机增减伪造 %d 台主机指标。"+
+					"注意：资源巡检章节的数值为伪造值，不可用于真实结论；WAF 章节不受影响。",
+					ws.Format("2006-01-02"), we.Format("2006-01-02"), ds, len(faked))
+			}
 		}
 	}
 	if cfg.Engineer != "" {

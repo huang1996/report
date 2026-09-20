@@ -28,14 +28,15 @@ type Config struct {
 	Period string // check / week / range
 
 	// 输出
-	Out      string
-	Title    string
-	Engineer string
-	Split    string // none / project / section
-	ChartTop int
-	Dump     bool
-	Demo     bool // 内置样例数据，用于本地验证
-	IncludeBiz bool // 是否包含「业务巡检」章节（默认不添加）
+	Out           string
+	Title         string
+	Engineer      string
+	Split         string // none / project / section
+	ChartTop      int
+	Dump          bool
+	Demo          bool // 内置样例数据，用于本地验证
+	IncludeBiz    bool // 是否包含「业务巡检」章节（默认不添加）
+	FakeWhenEmpty bool // 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标
 
 	// WAF（safeline）数据源
 	DatabaseURL  string
@@ -57,6 +58,43 @@ type Config struct {
 	RunWeekdays []int // 定时模式下允许生成的星期（0=周日...6=周六；为空则每天生成）
 
 	ShowVersion bool // 打印版本信息后退出
+
+	// UnparsedArgs 命令行中未被识别的剩余参数（正常为空），非空说明部分参数写法有误、已被忽略
+	UnparsedArgs []string
+}
+
+// boolLiteral 判断字符串是否为布尔字面量，返回归一化后的 "true"/"false"
+func boolLiteral(s string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "t", "yes", "y", "on":
+		return "true", true
+	case "0", "false", "f", "no", "n", "off":
+		return "false", true
+	}
+	return "", false
+}
+
+// normalizeBoolArgs 兼容 `-flag true` / `-flag false` 这种「空格分隔给布尔参数赋值」的写法。
+//
+// Go 标准库的 flag 对布尔标志只认 `-flag` 与 `-flag=true` 两种形式：写成 `-flag true` 时，
+// 标志被置真，而 `true` 会被当成位置参数 —— 解析就此停止，其后的所有参数都被静默忽略。
+// 这里在解析前把 `-boolflag <true|false|1|0|yes|no|on|off>` 归一化为 `-boolflag=<value>`。
+func normalizeBoolArgs(args []string, boolFlags map[string]bool) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		name := strings.TrimLeft(a, "-")
+		if strings.HasPrefix(a, "-") && name != "" && !strings.Contains(name, "=") &&
+			boolFlags[name] && i+1 < len(args) {
+			if v, ok := boolLiteral(args[i+1]); ok {
+				out = append(out, a+"="+v)
+				i++
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func env(key, def string) string {
@@ -85,6 +123,15 @@ func intsStr(v []int) []string {
 		out = append(out, strconv.Itoa(n))
 	}
 	return out
+}
+
+// envBool 读取布尔型环境变量：1 / true / yes 视为真（不区分大小写），未设置时返回 def
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 }
 
 func envInt(key string, def int) int {
@@ -138,7 +185,8 @@ func parseConfig() *Config {
 	c.ReportTime = env("REPORT_TIME", "12:00")
 	c.HeaderText = env("REPORT_HEADER", "统筹运维项目")
 	c.LogLevel = env("LOG_LEVEL", "INFO")
-	c.IncludeBiz = os.Getenv("REPORT_INCLUDE_BIZ") == "1" || strings.EqualFold(os.Getenv("REPORT_INCLUDE_BIZ"), "true")
+	c.IncludeBiz = envBool("REPORT_INCLUDE_BIZ", false)
+	c.FakeWhenEmpty = envBool("REPORT_FAKE_WHEN_EMPTY", false)
 	c.RunWeekdays = parseWeekdays(os.Getenv("REPORT_RUN_WEEKDAYS"))
 
 	// 命令行参数覆盖（compose 中通过 command 配置）
@@ -172,6 +220,7 @@ func parseConfig() *Config {
 	f.StringVar(&c.WebdavLogin, "webdav_login", c.WebdavLogin, "WebDAV 账号")
 	f.StringVar(&c.WebdavPass, "webdav_password", c.WebdavPass, "WebDAV 密码")
 	f.BoolVar(&c.IncludeBiz, "report_include_biz", c.IncludeBiz, "是否包含「业务巡检」章节（默认不添加）")
+	f.BoolVar(&c.FakeWhenEmpty, "fake_when_empty", c.FakeWhenEmpty, "统计周期内 n9e 无数据时，按该数据源最新数据随机增减伪造资源巡检指标（仅 n9e 部分，WAF 章节不受影响）")
 	var runWeekdays string
 	f.StringVar(&runWeekdays, "report_run_weekdays", strings.Join(intsStr(c.RunWeekdays), ","), "定时模式下允许生成的星期（0=周日...6=周六，逗号分隔；留空则每天生成）")
 	var wafURL, wafExceptApps, wafExceptIPs string
@@ -182,7 +231,23 @@ func parseConfig() *Config {
 	f.BoolVar(&c.Demo, "demo", false, "使用内置样例数据生成报告（本地验证用）")
 	f.BoolVar(&c.Now, "now", false, "立即执行一次后退出（否则按 REPORT_TIME 每天定时执行）")
 	f.BoolVar(&c.ShowVersion, "version", false, "打印版本信息后退出")
-	f.Parse(os.Args[1:])
+
+	// 布尔标志名收集（供 `-flag true` 写法归一化用）
+	boolFlags := map[string]bool{}
+	f.VisitAll(func(fl *flag.Flag) {
+		if bf, ok := fl.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags[fl.Name] = true
+		}
+	})
+
+	if err := f.Parse(normalizeBoolArgs(os.Args[1:], boolFlags)); err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "参数解析失败：%v\n", err)
+		os.Exit(2)
+	}
+	c.UnparsedArgs = f.Args()
 
 	changed := map[string]bool{}
 	f.Visit(func(fl *flag.Flag) { changed[fl.Name] = true })

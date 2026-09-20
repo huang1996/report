@@ -1,5 +1,6 @@
 /report/
 /logs/
+/输出/
 .workbuddy/
 *.docx
 .env
