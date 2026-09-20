@@ -55,9 +55,9 @@ type WafGeo struct {
 }
 
 type WafIPStat struct {
-	IP        string
+	IP         string
 	AttackType string
-	Count     int64
+	Count      int64
 }
 
 type WafAttackType struct {
@@ -80,13 +80,13 @@ type WafData struct {
 }
 
 type WafClient struct {
-	db          *sql.DB
-	exceptApps  []string
-	exceptIPs   []string
-	startTime   int64 // unix 秒
-	endTime     int64
-	startDay    string
-	endDay      string
+	db               *sql.DB
+	exceptApps       []string
+	exceptIPs        []string
+	startTime        int64 // unix 秒
+	endTime          int64
+	startDay         string
+	endDay           string
 	jsonbServerNames bool // mgt_website.server_names 为 jsonb（新版本）；false 为 text[]（旧版本）
 	jsonbPorts       bool // mgt_website.ports 为 jsonb
 }

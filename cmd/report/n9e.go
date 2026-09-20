@@ -24,16 +24,16 @@ const (
 )
 
 var n9eQueries = map[string]string{
-	"cores":    "system_n_cpus",
-	"cpu":      "avg by (ident) (cpu_usage_active)",
-	"mem_pct":  "mem_used_percent",
-	"mem_total": "mem_total",
-	"disk_pct":  "disk_used_percent{" + diskFilter + "}",
+	"cores":      "system_n_cpus",
+	"cpu":        "avg by (ident) (cpu_usage_active)",
+	"mem_pct":    "mem_used_percent",
+	"mem_total":  "mem_total",
+	"disk_pct":   "disk_used_percent{" + diskFilter + "}",
 	"disk_total": "disk_total{" + diskFilter + "}",
-	"diskio":    "diskio_io_util{" + ioFilter + "}",
-	"net":       "sum by (ident) (rate(net_bits_recv{" + ifFilter + "}[5m]))/1e6 + sum by (ident) (rate(net_bits_sent{" + ifFilter + "}[5m]))/1e6",
-	"conn":      "netstat_tcp_inuse",
-	"conn_alt":  "sockstat_tcp_inuse",
+	"diskio":     "diskio_io_util{" + ioFilter + "}",
+	"net":        "sum by (ident) (rate(net_bits_recv{" + ifFilter + "}[5m]))/1e6 + sum by (ident) (rate(net_bits_sent{" + ifFilter + "}[5m]))/1e6",
+	"conn":       "netstat_tcp_inuse",
+	"conn_alt":   "sockstat_tcp_inuse",
 }
 
 type N9EClient struct {
@@ -96,9 +96,9 @@ func (c *N9EClient) login() {
 }
 
 type DataSource struct {
-	ID    interface{}
-	Name  string
-	Type  string
+	ID   interface{}
+	Name string
+	Type string
 }
 
 func (c *N9EClient) ListDatasources() ([]DataSource, error) {
@@ -257,7 +257,8 @@ func (c *N9EClient) QueryRange(expr string, start, end int64, step int) ([]promS
 
 // ---- ident 解析 ----
 // 形如：000093-192.168.30.105-大数据生产区-天地图政务版-邹源
-//      000095-10.40.1.2-智慧民政-业务服务器8
+//
+//	000095-10.40.1.2-智慧民政-业务服务器8
 var (
 	ipRe   = regexp.MustCompile(`^\d{1,3}(?:\.\d{1,3}){3}$`)
 	nameRe = regexp.MustCompile(`^[\p{Han}·]{2,4}$`)
@@ -461,9 +462,9 @@ func ReadN9E(c *N9EClient, start, end int64, step int, identFilter, layout strin
 	memT := map[string]float64{}
 	net := map[string][]float64{}
 	conn := map[string][]float64{}
-	io := map[string][][][2]float64{}   // ident -> series -> [(ts, val)]
+	io := map[string][][][2]float64{}            // ident -> series -> [(ts, val)]
 	disk := map[string]map[string][][2]float64{} // ident -> path -> [(ts, val)]
-	dtot := map[[2]string]float64{}    // (ident, path) -> total bytes
+	dtot := map[[2]string]float64{}              // (ident, path) -> total bytes
 
 	for _, s := range data["cores"] {
 		if id := s.Metric["ident"]; id != "" && keep(s.Metric) {

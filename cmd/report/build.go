@@ -13,12 +13,12 @@ import (
 )
 
 type BuildInput struct {
-	Cfg      *Config
-	Rows     []HostRow
-	Waf      *WafData // nil 表示本期未接入 WAF 数据
-	WafNote  string   // WAF 数据获取异常时的说明
-	WS, WE   time.Time
-	Source   string // 数据来源描述
+	Cfg     *Config
+	Rows    []HostRow
+	Waf     *WafData // nil 表示本期未接入 WAF 数据
+	WafNote string   // WAF 数据获取异常时的说明
+	WS, WE  time.Time
+	Source  string // 数据来源描述
 }
 
 func reportTitle(cfg *Config, rows []HostRow) string {

@@ -475,7 +475,7 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 				}
 				ext := minExt
 				if math.Abs(s) > 1e-6 {
-					ext = (fy - float64(cy))/s - float64(r)
+					ext = (fy-float64(cy))/s - float64(r)
 				}
 				if ext > maxExt {
 					ext = maxExt
