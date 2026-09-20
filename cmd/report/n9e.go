@@ -256,19 +256,40 @@ func (c *N9EClient) QueryRange(expr string, start, end int64, step int) ([]promS
 }
 
 // ---- ident 解析 ----
-// 形如：000093-192.168.30.105-大数据生产区-天地图政务版-邹源
+// ident 由「-」分隔、全部字段靠约定命名，常见形态：
 //
-//	000095-10.40.1.2-智慧民政-业务服务器8
+//	000002-10.194.67.194-泸州市环保三级统筹项目-电子签章      （租户-IP-项目-角色）
+//	000095-10.40.1.2-智慧民政-业务服务器8-张三               （租户-IP-项目-角色-工程师）
+//	000093-192.168.30.105-大数据生产区-天地图政务版-业务服务器1-邹源（租户-IP-分区-项目-角色-工程师）
 var (
 	ipRe   = regexp.MustCompile(`^\d{1,3}(?:\.\d{1,3}){3}$`)
 	nameRe = regexp.MustCompile(`^[\p{Han}·]{2,4}$`)
 )
 
+// ident 解析选项
+type IdentOpts struct {
+	Filter       string // ident 关键字过滤（空=全部）
+	Layout       string // auto / section-first / project-first
+	EngineerTail string // 末尾段判定：auto（默认）/ always / never
+}
+
+// identOpts 由配置生成 ident 解析选项
+func identOpts(cfg *Config) IdentOpts {
+	return IdentOpts{Filter: cfg.Project, Layout: cfg.Layout, EngineerTail: cfg.EngineerTail}
+}
+
 type IdentInfo struct {
 	Tenant, IP, Section, Project, Role, Engineer string
 }
 
-func parseIdent(ident, layout string) IdentInfo {
+// parseIdent 解析 ident。layout：auto/section-first/project-first；
+// engineerTail：末尾段处理策略 auto/always/never。
+//
+// 关键点：ident 里「角色」和「运维工程师」都可能是 2~4 个纯汉字（如「电子签章」是角色、
+// 「邹源」是姓名），字面无法区分。这里按「角色必备、工程师可选」的约定判定：
+// 只有当末尾段被当作工程师后**仍能解析出角色**时，才认定它是工程师姓名；
+// 否则把该段当作角色本身，避免出现「角色为空、工程师=电子签章」这种明显错位。
+func parseIdent(ident, layout, engineerTail string) IdentInfo {
 	out := IdentInfo{IP: strings.TrimSpace(ident), Section: "—", Project: "—", Role: "—", Engineer: "—"}
 	var parts []string
 	for _, p := range strings.Split(ident, "-") {
@@ -296,14 +317,7 @@ func parseIdent(ident, layout string) IdentInfo {
 	if len(rest) == 0 {
 		return out
 	}
-	// 末尾若是纯中文姓名（2~4 字），视为运维工程师
-	if len(rest) >= 2 && nameRe.MatchString(rest[len(rest)-1]) {
-		out.Engineer = rest[len(rest)-1]
-		rest = rest[:len(rest)-1]
-	}
-	if len(rest) == 0 {
-		return out
-	}
+	// 命名布局：rest[0] 以「区」结尾视为「分区在前」，否则「项目在前」
 	lay := layout
 	if lay == "auto" {
 		if strings.HasSuffix(rest[0], "区") {
@@ -311,6 +325,21 @@ func parseIdent(ident, layout string) IdentInfo {
 		} else {
 			lay = "project-first"
 		}
+	}
+	// 末尾段若是纯中文姓名（2~4 字）则视为运维工程师
+	if engineerTail != "never" && len(rest) >= 2 && nameRe.MatchString(rest[len(rest)-1]) {
+		// 角色所需的最少段数（用于判断摘掉末尾段后是否还剩得下角色）
+		need := 2 // 项目 + 角色
+		if lay == "section-first" {
+			need = 3 // 网络分区 + 项目 + 角色
+		}
+		if engineerTail == "always" || len(rest) > need {
+			out.Engineer = rest[len(rest)-1]
+			rest = rest[:len(rest)-1]
+		}
+	}
+	if len(rest) == 0 {
+		return out
 	}
 	if lay == "section-first" {
 		out.Section = rest[0]
@@ -423,9 +452,10 @@ func sortHosts(rows []HostRow) {
 	})
 }
 
-// ReadN9E 从 n9e 采集 [start,end] 窗口内各主机指标；identFilter 非空时按 ident 关键字过滤
-func ReadN9E(c *N9EClient, start, end int64, step int, identFilter, layout string) ([]HostRow, error) {
+// ReadN9E 从 n9e 采集 [start,end] 窗口内各主机指标；opts.Filter 非空时按 ident 关键字过滤
+func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRow, error) {
 	c.login()
+	identFilter, layout := opts.Filter, opts.Layout
 	log.Infof("正在从 n9e 拉取数据：%s（数据源 #%s，%s ~ %s，步长 %ds）",
 		c.base, c.ds,
 		time.Unix(start, 0).Format("2006-01-02 15:04"),
@@ -577,7 +607,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, identFilter, layout strin
 
 	rows := []HostRow{}
 	for _, ident := range idents {
-		info := parseIdent(ident, layout)
+		info := parseIdent(ident, layout, opts.EngineerTail)
 		cpuV := cpu[ident]
 		memV := memP[ident]
 		netV := net[ident]

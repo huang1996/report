@@ -17,6 +17,7 @@ type Config struct {
 	Project                     string // 项目名关键字（ident 过滤 / 自动检索数据源）
 	MaxDS                       int
 	Layout                      string // auto / section-first / project-first
+	EngineerTail                string // ident 末尾段判定：auto / always / never
 	Insecure                    bool
 	Step                        int
 	ListDS                      bool
@@ -173,6 +174,7 @@ func parseConfig() *Config {
 	c.Pass = env("N9E_PASS", "")
 	c.Project = env("N9E_PROJECT", "")
 	c.MaxDS = envInt("N9E_MAX_DS", 90)
+	c.EngineerTail = env("N9E_IDENT_ENGINEER_TAIL", "auto")
 	c.Title = env("REPORT_NAME", "")
 	c.Engineer = env("REPORT_ENGINEER", "")
 	c.DatabaseURL = env("WAF_DATABASE_URL", env("DATABASE_URL", "")) // DATABASE_URL 为旧名，兼容保留
@@ -200,6 +202,8 @@ func parseConfig() *Config {
 	f.StringVar(&c.Project, "n9e_project", c.Project, "项目名关键字，如「智慧民政」；未指定 -n9e_ds_id 时自动在全部数据源中检索")
 	f.IntVar(&c.MaxDS, "n9e_max_ds", c.MaxDS, "自动检索数据源时的最大编号")
 	f.StringVar(&c.Layout, "layout", "auto", "ident 命名规则：auto/section-first/project-first")
+	f.StringVar(&c.EngineerTail, "ident_engineer_tail", c.EngineerTail,
+		"ident 末尾段判定：auto=仅当摘掉它后仍能解析出角色才当工程师（默认）/ always=末尾 2~4 汉字一律当工程师 / never=不识别工程师")
 	f.BoolVar(&c.Insecure, "insecure", false, "跳过 HTTPS 证书校验")
 	f.IntVar(&c.Step, "step", 300, "采样步长（秒）")
 	f.BoolVar(&c.ListDS, "list-ds", false, "列出 n9e 全部数据源后退出")

@@ -66,7 +66,7 @@ func captureFakeBaseline(c *N9EClient, cfg *Config, ds string) (*fakeBaseline, e
 	}
 	now := time.Now()
 	ws := now.Add(-fakeBaseWindow * time.Second)
-	rows, err := ReadN9E(c, ws.Unix(), now.Unix(), cfg.Step, cfg.Project, cfg.Layout)
+	rows, err := ReadN9E(c, ws.Unix(), now.Unix(), cfg.Step, identOpts(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("基准查询失败：%w", err)
 	}

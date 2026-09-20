@@ -44,6 +44,13 @@ func main() {
 		log.Warnf("以下参数未被识别、已忽略：%s（布尔参数请写 -flag 或 -flag=true）",
 			strings.Join(cfg.UnparsedArgs, " "))
 	}
+	// ident 末尾段判定策略：取值非法时回退到 auto，避免静默按错误策略解析
+	switch cfg.EngineerTail {
+	case "auto", "always", "never":
+	default:
+		log.Warnf("ident_engineer_tail=%q 不是有效取值（auto/always/never），已按 auto 处理", cfg.EngineerTail)
+		cfg.EngineerTail = "auto"
+	}
 	log.Debugf("配置加载完成：n9e=%s ds=%s project=%s db=%s",
 		cfg.Base, cfg.DS, cfg.Project, maskURL(cfg.DatabaseURL))
 
@@ -396,7 +403,7 @@ func runOnce(cfg *Config, ws, we time.Time) {
 			}
 		}
 		cli := NewN9EClient(cfg.Base, ds, cfg.Token, cfg.User, cfg.Pass, 180*time.Second, cfg.Insecure)
-		res, err := ReadN9E(cli, ws.Unix(), we.Unix(), cfg.Step, cfg.Project, cfg.Layout)
+		res, err := ReadN9E(cli, ws.Unix(), we.Unix(), cfg.Step, identOpts(cfg))
 		if err != nil {
 			log.Errorf("n9e 采集失败：%v", err)
 		} else {
