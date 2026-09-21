@@ -385,63 +385,57 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 	const S = 2
 	linePen = 2 * S // 指示线笔宽同步放大
 	defer func() { linePen = 2 }()
-	W, H := 1400*S, 900*S
-	img := image.NewRGBA(image.Rect(0, 0, W, H))
-	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	// 画布高度按「标注占位」动态确定：小扇区集中在 6 点方向时，标注会被防重叠逻辑
+	// 逐个向下推，固定高度会把最后一截标注挤出图片区域。因此先做一轮纯几何预演
+	// （不依赖画布），算出标注纵向占用，再开画布；圆心随之调整，让内容纵向居中。
+	const (
+		pieR     = 300.0 * S  // 饼半径
+		minExt   = 40.0 * S   // 指示线径向段最小延伸长度
+		minGap   = 38.0 * S   // 同侧相邻标注最小纵向间距
+		titleBot = 60.0 * S   // 标题区下缘（标注上边界）
+		botPad   = 30.0 * S   // 画布下边距
+		Hmax     = 1400.0 * S // 画布高度上限：极端数据时间距压缩兜底，避免画布无限拉长
+	)
+	W := 1400 * S
+	cx := 560.0 * S
 
-	drawText(img, title, W/2, 26*S, 30*S, hexColor("1F3864"), 1)
-	if len(items) == 0 {
-		return img
-	}
-
-	cx, cy, r := 560*S, 490*S, 300*S
 	total := 0.0
 	for _, it := range items {
 		total += it.Value
 	}
-	if total <= 0 {
+	if len(items) == 0 || total <= 0 {
+		img := image.NewRGBA(image.Rect(0, 0, W, 600*S))
+		draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+		drawText(img, title, W/2, 26*S, 30*S, hexColor("1F3864"), 1)
 		return img
 	}
 
 	start := -math.Pi / 2 // 起始角：6 点方向，逐项逆时针推进（与 fillSector 的 y 翻转坐标系一致）
 	mids := make([]float64, len(items))
 	pcts := make([]float64, len(items))
+	arcs := make([][2]float64, len(items))
 	for i, it := range items {
 		ang := it.Value / total * 2 * math.Pi
-		end := start + ang
-		mid := start + ang/2
-		ocx, ocy := cx, cy
-		if i == 0 { // 第一块外扩强调
-			ocx = cx + int(14*S*math.Cos(mid))
-			ocy = cy - int(14*S*math.Sin(mid)) // 像素 y 向下，与 fillSector 的角度约定一致
-		}
-		fillSector(img, ocx, ocy, r, start, end, hexColor(chartPalette[i%len(chartPalette)]))
-		// 占比统一放在外部文本标注中，扇区内不再绘制百分比
-		pct := it.Value / total * 100
-		mids[i] = mid
-		pcts[i] = pct
-		start = end
+		arcs[i] = [2]float64{start, start + ang}
+		mids[i] = start + ang/2
+		pcts[i] = it.Value / total * 100
+		start = arcs[i][1]
 	}
 
-	// 外部文本标注：饼图内不显示占比，文字（名称+占比）落在第二段水平线段上；
-	// 左列标注统一左对齐、右列标注统一右对齐（固定列锚点），同侧纵向拉开间隔避免重叠。
-	const (
-		labelSize = 22.0 * S   // 标注文字字号
-		labelTop  = 27.0 * S   // 文字绘制点相对线段上移量
-		backTop   = 31.0 * S   // 白色衬底上边界相对线段上移量
-		backBot   = 4.0 * S    // 白色衬底下边界相对线段上移量（留出线段作下划线）
-		minGap    = 38.0 * S   // 同侧相邻标注最小纵向间距
-		minExt    = 40.0 * S   // 径向段最小延伸长度（像素）；同时保证 |sin|≥0.9 的折点落在饼外，水平段不穿饼
-		maxExt    = 220.0 * S  // 径向段最大延伸长度
-		colLeftX  = 80.0 * S   // 左列文字左对齐锚点（左侧页边距）
-		colRightX = 1060.0 * S // 右列文字右对齐锚点（避开右侧图例）
-	)
-	drawCol := func(inds []int) {
-		if len(inds) == 0 {
-			return
+	// 标注默认按扇区方位分列（classifySide），但正上/正下近垂直区域内的扇区，
+	// 指示线水平段从圆外经过，放左放右均不会穿过饼面 —— 这类「可摆动」标注
+	// 按两侧纵向拥挤程度动态分配，哪边宽松放哪边，避免小扇区在单侧挤压溢出。
+	sides := make([]float64, len(items))
+	var flex []int
+	flexSin := (pieR + 12.0*S) / (pieR + minExt) // 水平段不擦碰饼缘的安全阈值
+	for i, mid := range mids {
+		sides[i] = classifySide(mid)
+		if math.Abs(math.Sin(mid)) >= flexSin {
+			flex = append(flex, i)
 		}
-		// 按上/下半圆分组，各自从靠近圆心的一端向外排序
-		var above, below []int
+	}
+	// splitCol 把一列标注按上/下半圆分组并排序（由近圆心到远圆心）
+	splitCol := func(inds []int) (above, below []int) {
 		for _, i := range inds {
 			if math.Sin(mids[i]) > 0 {
 				above = append(above, i)
@@ -451,81 +445,311 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 		}
 		sort.Slice(above, func(a, b int) bool { return math.Sin(mids[above[a]]) < math.Sin(mids[above[b]]) })
 		sort.Slice(below, func(a, b int) bool { return math.Sin(mids[below[a]]) > math.Sin(mids[below[b]]) })
-		for _, group := range [][]int{above, below} {
-			prev := math.NaN()
-			for _, i := range group {
-				mid := mids[i]
-				side := classifySide(mid)
-				c := hexColor(chartPalette[i%len(chartPalette)])
-				cosM, sinM := math.Cos(mid), math.Sin(mid)
-				s := -sinM // 折点 y = cy + (r+ext)·s
-				// 使折点落在自然延伸位置，若与上一个标注间距不足则向外推
-				desired := float64(cy) + (float64(r)+minExt)*s
-				fy := desired
-				if !math.IsNaN(prev) {
-					if s > 0 { // 下半圆：只能向下推
-						if fy < prev+minGap {
-							fy = prev + minGap
-						}
-					} else { // 上半圆：只能向上推
-						if fy > prev-minGap {
-							fy = prev - minGap
-						}
+		return above, below
+	}
+	// chainExtent 以圆心为原点、按 minGap 模拟一组标注的纵向排布，返回该组离圆心最远的延伸量
+	chainExtent := func(inds []int, up bool) float64 {
+		if len(inds) == 0 {
+			return 0
+		}
+		prev := math.NaN()
+		last := 0.0
+		for _, i := range inds {
+			f := (pieR + minExt) * -math.Sin(mids[i])
+			if !math.IsNaN(prev) {
+				if up {
+					if f > prev-minGap {
+						f = prev - minGap
+					}
+				} else {
+					if f < prev+minGap {
+						f = prev + minGap
 					}
 				}
-				ext := minExt
-				if math.Abs(s) > 1e-6 {
-					ext = (fy-float64(cy))/s - float64(r)
+			}
+			prev = f
+			last = f
+		}
+		if up {
+			return -last
+		}
+		return last
+	}
+	// 标注几何常量（geomFor 求值与绘制共用）
+	const (
+		minGapMin = 30.0 * S   // 防溢出时间距压缩的下限（仍大于字高，不会叠字）
+		maxExt    = 220.0 * S  // 径向段最大延伸长度
+		colLeftX  = 80.0 * S   // 左列文字左对齐锚点（左侧页边距）
+		colRightX = 1060.0 * S // 右列文字右对齐锚点（避开右侧图例）
+	)
+
+	// layoutGroup 计算同侧一组标注的纵向位置。up=true 上半圆（向上排布），
+	// up=false 下半圆（向下排布）。inds 已按由近圆心到远圆心排序。
+	layoutGroup := func(inds []int, up bool, cy, topLimit, botLimit float64) []float64 {
+		n := len(inds)
+		fys := make([]float64, n)
+		natural := func(i int) float64 {
+			return cy + (pieR+minExt)*-math.Sin(mids[i])
+		}
+		limit, gap := botLimit, minGap
+		if up {
+			limit = topLimit
+		}
+		// 自然间距放不下边界内时，先压缩间距（等分剩余空间，但不小于 minGapMin）
+		if n > 1 {
+			room := limit - natural(inds[0])
+			if !up {
+				room = -room
+			}
+			if room < float64(n-1)*gap {
+				gap = room / float64(n-1)
+				if gap < minGapMin {
+					gap = minGapMin
 				}
-				if ext > maxExt {
-					ext = maxExt
-					fy = float64(cy) + (float64(r)+ext)*s
-				}
-				prev = fy
-				// 弧中点（扇区边缘）→ 折点：沿半径方向伸出
-				ax := float64(cx) + (float64(r)-2*float64(S))*cosM
-				ay := float64(cy) - (float64(r)-2*float64(S))*sinM
-				fx := float64(cx) + (float64(r)+ext)*cosM
-				// 折点 → 水平段：延伸到列锚点（左列文字左对齐、右列文字右对齐）
-				label := sprintf("%s %.2f%%", items[i].Label, pcts[i])
-				tw := float64(textWidth(label, labelSize))
-				ex := colLeftX
-				if side > 0 {
-					ex = colRightX
-				}
-				// 罕见情形：折点已在锚点外侧（近 3 点方向且 ext 被推大），线段改为向外短延伸
-				if side > 0 && fx > ex {
-					ex = fx + 12*S
-				}
-				if side < 0 && fx < ex {
-					ex = fx - 12*S
-				}
-				drawLine(img, int(ax), int(ay), int(fx), int(fy), c)
-				drawLine(img, int(fx), int(fy), int(ex), int(fy), c)
-				// 文字对齐落位：白色衬底防压扇区边缘（衬底底边在线段上方，线段保持可见作下划线）
-				var tx int
-				align := 0
-				if side > 0 {
-					tx = int(ex) - int(tw)
-					align = 2
+			}
+		}
+		for k, i := range inds {
+			fy := natural(i)
+			if k > 0 {
+				if up {
+					if fy > fys[k-1]-gap {
+						fy = fys[k-1] - gap
+					}
 				} else {
-					tx = int(ex)
+					if fy < fys[k-1]+gap {
+						fy = fys[k-1] + gap
+					}
 				}
-				fillRect(img, tx-4*S, int(fy)-int(backTop), tx+int(tw)+4*S, int(fy)-int(backBot), hexColor("FFFFFF"))
-				drawText(img, label, int(ex), int(fy)-int(labelTop), labelSize, c, align)
+			}
+			fys[k] = fy
+		}
+		// 仍越界时整组向界内回移，但每项不越过自然径向位置（保证径向段不短于 minExt）
+		last := fys[n-1]
+		shift := 0.0
+		if !up && last > limit {
+			shift = last - limit
+		} else if up && last < limit {
+			shift = limit - last
+		}
+		if shift > 0 {
+			for k, i := range inds {
+				fy := fys[k]
+				if up {
+					fy += shift
+					if fy > natural(i) {
+						fy = natural(i)
+					}
+				} else {
+					fy -= shift
+					if fy < natural(i) {
+						fy = natural(i)
+					}
+				}
+				fys[k] = fy
+			}
+		}
+		return fys
+	}
+
+	// pieLead 单个标注折线的端点：弧中点(ax,ay) → 折点(fx,fy) → 列锚点(ex,fy)
+	type pieLead struct {
+		ax, ay, fx, fy, ex float64
+	}
+
+	// geomFor 按给定分列方案完整求值布局：画布高度、圆心与每个标注的折线端点。
+	// 换边方案的交叉检测与最终绘制都基于它，保证二者几何严格一致。
+	geomFor := func(sds []float64) ([]pieLead, float64, float64) {
+		var l, r []int
+		for i := range items {
+			if sds[i] < 0 {
+				l = append(l, i)
+			} else {
+				r = append(r, i)
+			}
+		}
+		la, lb := splitCol(l)
+		ra, rb := splitCol(r)
+		extAbove := math.Max(chainExtent(la, true), chainExtent(ra, true))
+		extBelow := math.Max(chainExtent(lb, false), chainExtent(rb, false))
+		legendH := 240.0*S + float64(len(items))*44.0*S + 20.0*S // 图例底端不超出画布
+		h := math.Max(900*S, math.Max(titleBot+extAbove+extBelow+botPad+8*S, legendH))
+		h = math.Min(h, Hmax)
+		// 圆心：让标注内容在「标题以下 ~ 下边距以上」区间居中，并保证饼不顶进标题区
+		c := titleBot + extAbove + math.Max(0, (h-botPad-titleBot-extAbove-extBelow)/2)
+		if minCy := titleBot + pieR + 8*S; c < minCy {
+			c = minCy
+		}
+		if maxCy := h - botPad - pieR; c > maxCy {
+			c = maxCy
+		}
+		topLimit := titleBot + 8.0*S
+		botLimit := h - botPad
+		leads := make([]pieLead, len(items))
+		for _, col := range [][]int{l, r} {
+			above, below := splitCol(col)
+			for gi, group := range [][]int{above, below} {
+				if len(group) == 0 {
+					continue
+				}
+				fys := layoutGroup(group, gi == 0, c, topLimit, botLimit)
+				for k, i := range group {
+					mid := mids[i]
+					fy := fys[k]
+					cosM, sinM := math.Cos(mid), math.Sin(mid)
+					sn := -sinM // 折点 y = cy + (r+ext)·sn
+					ext := minExt
+					if math.Abs(sn) > 1e-6 {
+						ext = (fy-c)/sn - pieR
+					}
+					if ext < minExt {
+						ext = minExt
+						fy = c + (pieR+ext)*sn
+					}
+					if ext > maxExt {
+						ext = maxExt
+						fy = c + (pieR+ext)*sn
+					}
+					ld := pieLead{
+						ax: cx + (pieR-2.0*S)*cosM,
+						ay: c - (pieR-2.0*S)*sinM,
+						fx: cx + (pieR+ext)*cosM,
+						fy: fy,
+						ex: colLeftX,
+					}
+					if sds[i] > 0 {
+						ld.ex = colRightX
+					}
+					// 罕见情形：折点已在锚点外侧（近 3 点方向且 ext 被推大），线段改为向外短延伸
+					if sds[i] > 0 && ld.fx > ld.ex {
+						ld.ex = ld.fx + 12*S
+					}
+					if sds[i] < 0 && ld.fx < ld.ex {
+						ld.ex = ld.fx - 12*S
+					}
+					leads[i] = ld
+				}
+			}
+		}
+		return leads, h, c
+	}
+
+	// segsIntersect 判断两线段是否相交（含端点接触与共线重叠，按 0.5px 距离容差保守判定）
+	segsIntersect := func(x0, y0, x1, y1, x2, y2, x3, y3 float64) bool {
+		orient := func(ax, ay, bx, by, px, py float64) float64 {
+			return (bx-ax)*(py-ay) - (by-ay)*(px-ax)
+		}
+		onSeg := func(px, py, ax, ay, bx, by float64) bool {
+			if px < math.Min(ax, bx)-0.5 || px > math.Max(ax, bx)+0.5 ||
+				py < math.Min(ay, by)-0.5 || py > math.Max(ay, by)+0.5 {
+				return false
+			}
+			len2 := math.Hypot(bx-ax, by-ay)
+			if len2 < 1e-9 {
+				return math.Hypot(px-ax, py-ay) <= 0.5
+			}
+			return math.Abs(orient(ax, ay, bx, by, px, py))/len2 <= 0.5
+		}
+		d1 := orient(x2, y2, x3, y3, x0, y0)
+		d2 := orient(x2, y2, x3, y3, x1, y1)
+		d3 := orient(x0, y0, x1, y1, x2, y2)
+		d4 := orient(x0, y0, x1, y1, x3, y3)
+		if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)) {
+			return true
+		}
+		return onSeg(x0, y0, x2, y2, x3, y3) || onSeg(x1, y1, x2, y2, x3, y3) ||
+			onSeg(x2, y2, x0, y0, x1, y1) || onSeg(x3, y3, x0, y0, x1, y1)
+	}
+
+	// crossFree 检查分列方案下所有标注折线两两无交叉（换边准入条件）
+	crossFree := func(sds []float64) bool {
+		leads, _, _ := geomFor(sds)
+		for i := range items {
+			a := leads[i]
+			for j := i + 1; j < len(items); j++ {
+				b := leads[j]
+				if segsIntersect(a.ax, a.ay, a.fx, a.fy, b.ax, b.ay, b.fx, b.fy) ||
+					segsIntersect(a.ax, a.ay, a.fx, a.fy, b.fx, b.fy, b.ex, b.fy) ||
+					segsIntersect(a.fx, a.fy, a.ex, a.fy, b.ax, b.ay, b.fx, b.fy) ||
+					segsIntersect(a.fx, a.fy, a.ex, a.fy, b.fx, b.fy, b.ex, b.fy) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	// extTotal 返回当前分列下标注的纵向总占用（上延伸+下延伸），作为均衡目标
+	extTotal := func() float64 {
+		var l, r []int
+		for i := range items {
+			if sides[i] < 0 {
+				l = append(l, i)
+			} else {
+				r = append(r, i)
+			}
+		}
+		la, lb := splitCol(l)
+		ra, rb := splitCol(r)
+		return math.Max(chainExtent(la, true), chainExtent(ra, true)) +
+			math.Max(chainExtent(lb, false), chainExtent(rb, false))
+	}
+	// 逐个尝试把可摆动标注换到另一侧：仅当换边后纵向总占用更小、且全部折线两两无交叉时
+	// 才保留换边结果，反复迭代直到稳定（可摆动标注通常只有一两个，开销可忽略）。
+	best := extTotal()
+	for changed := true; changed; {
+		changed = false
+		for _, i := range flex {
+			sides[i] = -sides[i]
+			if s := extTotal(); s < best-0.5 && crossFree(sides) {
+				best = s
+				changed = true
+			} else {
+				sides[i] = -sides[i]
 			}
 		}
 	}
-	left, right := []int{}, []int{}
-	for i, mid := range mids {
-		if classifySide(mid) < 0 {
-			left = append(left, i)
-		} else {
-			right = append(right, i)
+
+	// 按最终分列方案求值布局（绘制与检测结果严格一致）
+	leaders, H, cy := geomFor(sides)
+
+	img := image.NewRGBA(image.Rect(0, 0, W, int(H)))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	drawText(img, title, W/2, 26*S, 30*S, hexColor("1F3864"), 1)
+
+	for i := range items { // 扇区（第一块外扩强调）
+		ocx, ocy := cx, cy
+		if i == 0 {
+			ocx = cx + 14.0*S*math.Cos(mids[i])
+			ocy = cy - 14.0*S*math.Sin(mids[i]) // 像素 y 向下，与 fillSector 的角度约定一致
 		}
+		fillSector(img, int(ocx), int(ocy), int(pieR), arcs[i][0], arcs[i][1], hexColor(chartPalette[i%len(chartPalette)]))
 	}
-	drawCol(left)
-	drawCol(right)
+
+	// 外部文本标注：饼图内不显示占比，文字（名称+占比）落在第二段水平线段上；
+	// 左列标注统一左对齐、右列标注统一右对齐（固定列锚点）；折线端点由 geomFor 求值。
+	const (
+		labelSize = 22.0 * S // 标注文字字号
+		labelTop  = 27.0 * S // 文字绘制点相对线段上移量
+		backTop   = 31.0 * S // 白色衬底上边界相对线段上移量
+		backBot   = 4.0 * S  // 白色衬底下边界相对线段上移量（留出线段作下划线）
+	)
+	// 绘制全部标注折线与文字（端点取自 geomFor 求值结果，与交叉检测一致）
+	for i := range items {
+		ld := leaders[i]
+		c := hexColor(chartPalette[i%len(chartPalette)])
+		drawLine(img, int(ld.ax), int(ld.ay), int(ld.fx), int(ld.fy), c)
+		drawLine(img, int(ld.fx), int(ld.fy), int(ld.ex), int(ld.fy), c)
+		label := sprintf("%s %.2f%%", items[i].Label, pcts[i])
+		tw := float64(textWidth(label, labelSize))
+		// 文字对齐落位：白色衬底防压扇区边缘（衬底底边在线段上方，线段保持可见作下划线）
+		tx, align := int(ld.ex), 0
+		if sides[i] > 0 {
+			tx = int(ld.ex) - int(tw)
+			align = 2
+		}
+		fillRect(img, tx-4*S, int(ld.fy)-int(backTop), tx+int(tw)+4*S, int(ld.fy)-int(backBot), hexColor("FFFFFF"))
+		drawText(img, label, int(ld.ex), int(ld.fy)-int(labelTop), labelSize, c, align)
+	}
 
 	// 图例（右侧）
 	ly0 := 240 * S
@@ -538,9 +762,10 @@ func DrawPieChart(title string, items []PieItem) image.Image {
 	return img
 }
 
-// classifySide 决定饼图标注放左侧还是右侧（-1 左 / 1 右）。
+// classifySide 决定饼图标注默认放左侧还是右侧（-1 左 / 1 右）。
 // 正上方、正下方 ±~26° 区域内的扇区统一分配到固定一侧（上→右、下→左），
 // 避免 cos 符号在 ±90° 附近抖动，把两个相邻小扇区的标注分到两侧而失去防重叠约束。
+// 该默认值随后会被分列均衡逻辑修正：近垂直区域内的扇区可按拥挤程度摆动到另一侧。
 func classifySide(mid float64) float64 {
 	c, s := math.Cos(mid), math.Sin(mid)
 	switch {
