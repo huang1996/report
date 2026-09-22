@@ -44,12 +44,10 @@ func main() {
 		log.Warnf("以下参数未被识别、已忽略：%s（布尔参数请写 -flag 或 -flag=true）",
 			strings.Join(cfg.UnparsedArgs, " "))
 	}
-	// ident 末尾段判定策略：取值非法时回退到 auto，避免静默按错误策略解析
-	switch cfg.EngineerTail {
-	case "auto", "always", "never":
-	default:
-		log.Warnf("ident_engineer_tail=%q 不是有效取值（auto/always/never），已按 auto 处理", cfg.EngineerTail)
-		cfg.EngineerTail = "auto"
+	// ident_engineer_tail 已弃用：工程师只认 -report_engineer（或 REPORT_ENGINEER）。
+	// 保留参数以免旧启动脚本报「未识别参数」，仅做一次性提醒。
+	if cfg.EngineerTail != "" && cfg.EngineerTail != "auto" {
+		log.Warnf("ident_engineer_tail=%q 已弃用且不再生效；运维工程师请用 -report_engineer 指定", cfg.EngineerTail)
 	}
 	log.Debugf("配置加载完成：n9e=%s ds=%s project=%s db=%s",
 		cfg.Base, cfg.DS, cfg.Project, maskURL(cfg.DatabaseURL))

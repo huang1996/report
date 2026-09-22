@@ -17,7 +17,7 @@ type Config struct {
 	Project                     string // 项目名关键字（ident 过滤 / 自动检索数据源）
 	MaxDS                       int
 	Layout                      string // auto / section-first / project-first
-	EngineerTail                string // ident 末尾段判定：auto / always / never
+	EngineerTail                string // 【已弃用】曾用于从 ident 推断工程师，现仅兼容旧配置
 	Insecure                    bool
 	Step                        int
 	ListDS                      bool
@@ -203,7 +203,7 @@ func parseConfig() *Config {
 	f.IntVar(&c.MaxDS, "n9e_max_ds", c.MaxDS, "自动检索数据源时的最大编号")
 	f.StringVar(&c.Layout, "layout", "auto", "ident 命名规则：auto/section-first/project-first")
 	f.StringVar(&c.EngineerTail, "ident_engineer_tail", c.EngineerTail,
-		"ident 末尾段判定：auto=仅当摘掉它后仍能解析出角色才当工程师（默认）/ always=末尾 2~4 汉字一律当工程师 / never=不识别工程师")
+		"【已弃用】曾用于从 ident 末尾段推断运维工程师；现工程师只认 -report_engineer，此项不再生效")
 	f.BoolVar(&c.Insecure, "insecure", false, "跳过 HTTPS 证书校验")
 	f.IntVar(&c.Step, "step", 300, "采样步长（秒）")
 	f.BoolVar(&c.ListDS, "list-ds", false, "列出 n9e 全部数据源后退出")

@@ -2,8 +2,10 @@ package main
 
 // n9e_ident_test.go —— ident 解析单测
 //
-// 重点覆盖「末尾 2~4 个纯汉字到底是角色还是运维工程师」这一歧义：
-// 角色是必备字段，因此摘掉末尾段后若解析不出角色，就应把它当作角色本身。
+// 约定：ident 里「角色」与「运维工程师姓名」在字面上无法区分（技术角色词如「数据库」
+// 「中间件」「前后端」和姓名如「邹源」「佘发彬」都是 2~4 个纯汉字）。
+// 因此**工程师不从 ident 推断**，只认 -report_engineer 手动指定；
+// ident 末段一律并入角色，保证信息不丢失。
 
 import "testing"
 
@@ -39,10 +41,10 @@ func TestParseIdentRoleVsEngineer(t *testing.T) {
 				Project: "泸州市环保三级统筹项目", Role: "附件服务器", Engineer: "—"},
 		},
 		{
-			name:  "四段式：末尾姓名仍是工程师（项目-角色-工程师）",
+			name:  "四段式：末段是人名也不再推断为工程师，并入角色（项目-角色-工程师）",
 			ident: "000095-10.40.1.2-智慧民政-业务服务器8-张三",
 			want: IdentInfo{Tenant: "000095", IP: "10.40.1.2", Section: "—",
-				Project: "智慧民政", Role: "业务服务器8", Engineer: "张三"},
+				Project: "智慧民政", Role: "业务服务器8-张三", Engineer: "—"},
 		},
 		{
 			name:  "非中文角色不受影响（数据源58 waf）",
@@ -63,16 +65,28 @@ func TestParseIdentRoleVsEngineer(t *testing.T) {
 				Project: "天地图政务版", Role: "电子签章", Engineer: "—"},
 		},
 		{
-			name:  "四段式 section-first：分区-项目-角色-工程师",
+			name:  "四段式 section-first：末段是人名也不再推断为工程师，并入角色",
 			ident: "000093-192.168.30.105-大数据生产区-天地图政务版-业务服务器1-邹源",
 			want: IdentInfo{Tenant: "000093", IP: "192.168.30.105", Section: "大数据生产区",
-				Project: "天地图政务版", Role: "业务服务器1", Engineer: "邹源"},
+				Project: "天地图政务版", Role: "业务服务器1-邹源", Engineer: "—"},
 		},
 		{
-			name:  "无 IP 的 ident 退回占位值",
+			name:  "无 IP 三段式：租户-项目-角色（角色为末段 ASCII 标识）",
+			ident: "000064-少数民族流动信息化平台-WAF",
+			want: IdentInfo{Tenant: "000064", IP: "—", Section: "—",
+				Project: "少数民族流动信息化平台", Role: "WAF", Engineer: "—"},
+		},
+		{
+			name:  "无 IP 且项目名含连字符：末段 ASCII 标识为角色，中间段并回项目",
 			ident: "000063-泸州市委组织部-公务员培训网-db",
-			want: IdentInfo{Tenant: "", IP: "000063-泸州市委组织部-公务员培训网-db", Section: "—",
-				Project: "000063-泸州市委组织部-公务员培训网-db", Role: "—", Engineer: "—"},
+			want: IdentInfo{Tenant: "000063", IP: "—", Section: "—",
+				Project: "泸州市委组织部-公务员培训网", Role: "db", Engineer: "—"},
+		},
+		{
+			name:  "无 IP 且首段非租户 ID：整体作为项目名兜底",
+			ident: "某业务平台-业务服务器1",
+			want: IdentInfo{Tenant: "", IP: "某业务平台-业务服务器1", Section: "—",
+				Project: "某业务平台-业务服务器1", Role: "—", Engineer: "—"},
 		},
 	}
 	for _, c := range cases {
@@ -85,28 +99,43 @@ func TestParseIdentRoleVsEngineer(t *testing.T) {
 	}
 }
 
-func TestParseIdentEngineerTailModes(t *testing.T) {
-	ident := "000002-10.194.67.194-泸州市环保三级统筹项目-电子签章"
+// TestEngineerNeverInferred 锁定新约定：运维工程师不从 ident 推断，恒为占位值「—」，
+// 且 engineerTail 三个取值（含已弃用的 always）都不再影响解析结果。
+//
+// 回归背景：ds39 的 `…-公共信用信息共享平台-信用二期-中间件` 曾被误判为
+// 「角色=信用二期、工程师=中间件」，导致报告表 1 的「运维工程师」栏显示成一串角色词
+// （中间件、主数据库、前后端、大屏、政务网、数据库）。根因见 parseIdent 注释。
+func TestEngineerNeverInferred(t *testing.T) {
+	// 典型的「角色词恰好是 2~4 个汉字」集合 —— 全部来自 ds39 真实 ident
+	roleLikeIdents := []string{
+		"000026-10.81.20.126-公共信用信息共享平台-信用二期-中间件",
+		"000026-10.81.20.112-公共信用信息共享平台-信用二期-主数据库",
+		"000026-10.192.197.5-公共信用信息共享平台-信用一期-前后端",
+		"000026-10.192.197.7-公共信用信息共享平台-信用一期-大屏",
+		"000026-10.192.197.40-公共信用信息共享平台-联合奖惩-政务网",
+		"000026-10.192.197.14-公共信用信息共享平台-信用泸州官网-数据库",
+		// 真实姓名同样不再被推断
+		"000095-10.40.1.2-智慧民政-业务服务器8-张三",
+		"000093-192.168.30.105-大数据生产区-天地图政务版-业务服务器1-邹源",
+	}
+	for _, tail := range []string{"auto", "always", "never"} {
+		for _, id := range roleLikeIdents {
+			got := parseIdent(id, "auto", tail)
+			if got.Engineer != "—" {
+				t.Errorf("engineerTail=%s 下 %q 仍推断出工程师 %q，应恒为「—」",
+					tail, id, got.Engineer)
+			}
+			// 角色必须非空 —— 原被误当作工程师的那段应并入角色，信息不丢
+			if got.Role == "" || got.Role == "—" {
+				t.Errorf("engineerTail=%s 下 %q 的角色为空，末段应并入角色", tail, id)
+			}
+		}
+	}
 
-	// auto：角色必备，末尾段留作角色
-	if got := parseIdent(ident, "auto", "auto"); got.Role != "电子签章" || got.Engineer != "—" {
-		t.Errorf("auto 模式应把末尾段当角色，实际 %+v", got)
-	}
-	// always：沿用旧行为，末尾段被当作工程师（此处角色为空，正是本次修复前的错位现象）
-	if got := parseIdent(ident, "auto", "always"); got.Engineer != "电子签章" || got.Role != "—" {
-		t.Errorf("always 模式应把末尾段当工程师，实际 %+v", got)
-	}
-	// never：不做工程师识别，末尾段并入角色
-	if got := parseIdent(ident, "auto", "never"); got.Role != "电子签章" || got.Engineer != "—" {
-		t.Errorf("never 模式应把末尾段并入角色，实际 %+v", got)
-	}
-	// 四段式下 never 与 auto 的差异：never 会把姓名并入角色
-	ident4 := "000095-10.40.1.2-智慧民政-业务服务器8-张三"
-	if got := parseIdent(ident4, "auto", "never"); got.Role != "业务服务器8-张三" {
-		t.Errorf("never 模式应把姓名并入角色，实际 %+v", got)
-	}
-	if got := parseIdent(ident4, "auto", "auto"); got.Role != "业务服务器8" || got.Engineer != "张三" {
-		t.Errorf("auto 模式应摘出工程师，实际 %+v", got)
+	// 具体校验一条：末段「中间件」应留在角色里
+	got := parseIdent("000026-10.81.20.126-公共信用信息共享平台-信用二期-中间件", "auto", "auto")
+	if got.Project != "公共信用信息共享平台" || got.Role != "信用二期-中间件" {
+		t.Errorf("解析异常：%+v（期望 Project=公共信用信息共享平台 Role=信用二期-中间件）", got)
 	}
 }
 
