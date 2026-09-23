@@ -1,8 +1,8 @@
 package main
 
 // n9e_allhosts_export_test.go —— 按当前处理逻辑遍历 n9e 全部数据源，
-// 把每台主机的「IP / 主机角色 / CPU规格 / 内存容量 / 磁盘容量 / 操作系统」
-// （即报告中表 3 的字段）导出为 xlsx，便于人工核对 ident 解析结果。
+// 把每台主机的「IP / 主机角色 / CPU规格 / CPU架构 / 内存容量 / 磁盘容量 / 操作系统」
+// （即报告中表 3 的字段）加上「agent 版本」导出为 xlsx，便于人工核对 ident 解析与采集结果。
 //
 // 默认跳过（需要连真实 n9e）；执行方式：
 //
@@ -167,8 +167,8 @@ func TestExportAllHostsToExcel(t *testing.T) {
 	//      · 无 IP 段的数据源（租户-项目-角色，真实 IP 来自 system_info.host_ip）；
 	//      · 主机侧未上报 disk_total（磁盘容量为 0，需在主机上检查 categraf 的 disk 插件）。
 	//    同一主机的历史残留 ident 已由 dedupeByIdent 在采集阶段剔除，故此处 IP 必须规范。
-	var badIP, noRole, noSpec, noDisk, inferredEng int
-	var badIPList, noRoleList, noDiskList []string
+	var badIP, noRole, noSpec, noDisk, inferredEng, noArch, noAgent int
+	var badIPList, noRoleList, noDiskList, noAgentList []string
 	for _, h := range hosts {
 		// IP 必须能由「ident 中的 IP 段」或「host_ip 标签」给出；两者都拿不到才算真缺陷
 		if !ipRe.MatchString(h.IP) {
@@ -190,6 +190,18 @@ func TestExportAllHostsToExcel(t *testing.T) {
 			noSpec++
 			t.Logf("未取到核数：ds%d %s", h.DS, h.Ident)
 		}
+		// CPU 架构与 agent 版本都是「尽量采集」的辅助信息，缺失只统计不判失败：
+		//   · 架构取自 system_info 的 kernel_version——Ubuntu（-generic）与 Windows 的内核串
+		//     本身不含架构标记，取不到属数据客观情况，需在主机侧补采才能覆盖；
+		//   · agent 版本取自 categraf_info，凡在报主机均应带 ident + version 标签，
+		//     缺失说明该主机未暴露 categraf 自身指标，值得逐个核查。
+		if h.Arch == "" {
+			noArch++
+		}
+		if h.AgentVer == "" {
+			noAgent++
+			noAgentList = append(noAgentList, sprintf("ds%d %s", h.DS, h.Ident))
+		}
 		// 磁盘容量取全部本地挂载点之和，正常不应为 0。
 		// 个别主机会因主机侧未上报 disk 指标而为 0（既有数据现状，非程序缺陷），
 		// 故与「角色缺失」同样只记录不判失败；若大面积缺失请核对 pickDiskReps 归并逻辑。
@@ -198,10 +210,21 @@ func TestExportAllHostsToExcel(t *testing.T) {
 			noDiskList = append(noDiskList, sprintf("ds%d %s", h.DS, h.Ident))
 		}
 	}
-	t.Logf("自检：非法 IP %d 台 / 角色缺失 %d 台 / 核数缺失 %d 台 / 磁盘容量缺失 %d 台 / 工程师被误推断 %d 台",
-		badIP, noRole, noSpec, noDisk, inferredEng)
+	t.Logf("自检：非法 IP %d 台 / 角色缺失 %d 台 / 核数缺失 %d 台 / 磁盘容量缺失 %d 台 / "+
+		"CPU架构缺失 %d 台 / agent版本缺失 %d 台 / 工程师被误推断 %d 台",
+		badIP, noRole, noSpec, noDisk, noArch, noAgent, inferredEng)
 	if inferredEng > 0 {
 		t.Errorf("有 %d 台主机的运维工程师由 ident 推断而来，应恒为「—」（见 parseIdent 注释）", inferredEng)
+	}
+	if noAgent > 0 {
+		t.Logf("—— agent 版本缺失明细（主机未上报 categraf_info，需在主机上检查 categraf 自身指标暴露）——")
+		for i, s := range noAgentList {
+			if i >= 15 {
+				t.Logf("   ...（共 %d 条，完整明细见导出的 xlsx）", len(noAgentList))
+				break
+			}
+			t.Logf("   %s", s)
+		}
 	}
 	if noDisk > 0 {
 		t.Logf("—— 磁盘容量缺失明细（主机侧未上报 disk_total，需在主机上检查 categraf 的 disk 采集插件）——")
@@ -269,9 +292,11 @@ func writeHostsXLSX(path string, hosts []exportedHost) error {
 }
 
 // buildSheetXML 生成 sheet1.xml：第 1 行表头，随后每台主机一行。
-// 列：数据源ID / 数据源名称 / IP 地址 / 主机角色 / CPU规格 / 内存容量 / 磁盘容量 / 操作系统 / ident（辅助核对）
+// 列：数据源ID / 数据源名称 / IP 地址 / 主机角色 / CPU规格 / CPU架构 / 内存容量 / 磁盘容量 /
+// 操作系统 / agent版本（核对用）/ ident（核对用）
 func buildSheetXML(hosts []exportedHost) string {
-	headers := []string{"数据源ID", "数据源名称", "IP 地址", "主机角色", "CPU规格", "内存容量", "磁盘容量", "操作系统", "ident（核对用）"}
+	headers := []string{"数据源ID", "数据源名称", "IP 地址", "主机角色", "CPU规格", "CPU架构",
+		"内存容量", "磁盘容量", "操作系统", "agent版本（核对用）", "ident（核对用）"}
 
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + "\n")
@@ -281,9 +306,9 @@ func buildSheetXML(hosts []exportedHost) string {
 		`<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>` +
 		`<selection pane="bottomLeft" activeCell="A2" sqref="A2"/>` +
 		`</sheetView></sheetViews>`)
-	// 列宽：ident 与数据源名称较长
+	// 列宽：ident / agent 版本（含 commit sha，约 45 字符）与数据源名称较长
 	b.WriteString(`<cols>`)
-	for i, w := range []float64{9, 30, 16, 22, 10, 12, 12, 34, 46} {
+	for i, w := range []float64{9, 30, 16, 22, 10, 10, 12, 12, 34, 46, 44} {
 		fmt.Fprintf(&b, `<col min="%d" max="%d" width="%g" customWidth="1"/>`, i+1, i+1, w)
 	}
 	b.WriteString(`</cols><sheetData>`)
@@ -307,9 +332,11 @@ func buildSheetXML(hosts []exportedHost) string {
 			{h.IP, 0},                             // IP：文本，避免被识别成数字
 			{orDash(h.Role), 0},                   // 角色
 			{sprintf("%.0f 核", h.Cores), 0},       // CPU 规格
+			{orDash(h.Arch), 0},                   // CPU 架构（内核版本串解析）
 			{sprintf("%.0f GB", h.MemTotalGB), 0}, // 内存容量
 			{fmtGB(h.DiskCapGB), 0},               // 磁盘容量（全部本地挂载点合计）
 			{orDash(h.OS), 0},                     // 操作系统
+			{orDash(h.AgentVer), 0},               // categraf agent 版本（核对用）
 			{h.Ident, 0},                          // ident 核对
 		}
 		for ci, c := range cells {
