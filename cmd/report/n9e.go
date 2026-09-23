@@ -265,13 +265,75 @@ func osDisplay(m map[string]string) string {
 	return name + " " + ver
 }
 
-// fetchHostMeta 拉取各主机操作系统与主机 IP（system_info 指标标签；缺失时返回空映射，不阻断报告）。
-// 同时返回 os 与 ip 两个映射：ip 用于补齐 ident 里不含 IP 的数据源
-// （如「租户-项目-角色」形态的 ident，真实 IP 只存在于 system_info 的 host_ip 标签）。
-// live 为当前在报 ident 的集合——system_info 是主机当前状态快照而非累计计数器，
-// 可作为「运维改名后仍活跃的 ident」的权威依据，用于剔除留存期内的历史残留 ident。
-func (c *N9EClient) fetchHostMeta(ts int64) (osMap, ipMap map[string]string, live map[string]bool) {
-	osMap, ipMap, live = map[string]string{}, map[string]string{}, map[string]bool{}
+// archMarkers 内核版本串中出现的 CPU 架构标记 → 架构名。
+// 架构名沿用 Go 的 GOARCH 命名习惯（amd64 / arm64 / 386 …），便于与构建产物对照。
+// 顺序有意义：先匹配更具体的标记（ppc64le 先于 ppc64、mips64el 先于 mips64、aarch64 先于 arm64 的近似写法）。
+var archMarkers = []struct{ marker, arch string }{
+	{"aarch64", "arm64"},
+	{"arm64", "arm64"},
+	{"armv8", "arm"},
+	{"armv7", "arm"},
+	{"armv6", "arm"},
+	{"x86_64", "amd64"},
+	{"amd64", "amd64"},
+	{"i686", "386"},
+	{"i586", "386"},
+	{"i486", "386"},
+	{"i386", "386"},
+	{"ppc64le", "ppc64le"},
+	{"ppc64", "ppc64"},
+	{"s390x", "s390x"},
+	{"mips64el", "mips64le"},
+	{"mips64", "mips64"},
+	{"loongarch64", "loong64"},
+	{"riscv64", "riscv64"},
+	{"sw_64", "sw64"},
+	{"sparc64", "sparc64"},
+}
+
+// archOf 从 system_info 的 kernel_version 标签解析 CPU 架构。
+//
+// 这是 n9e 侧唯一能拿到架构的途径——categraf 未上报任何 arch/os_arch/machine 标签
+// （已枚举全部数据源的指标名与标签名确认）。Linux 内核版本串末尾一般带架构标记，
+// 如 CentOS 的 3.10.0-1160.el7.x86_64、麒麟的 4.19.90-52.22.v2207.ky10.x86_64、
+// openEuler 的 6.6.0-159.4.3.154.oe2403sp4.aarch64；
+// 而 Ubuntu 的 6.8.0-60-generic 与 Windows 的 10.0.14393 Build 14393 不含架构信息，
+// 这类主机返回空串（报告中显示「—」），需在主机侧补充采集才能获得。
+func archOf(kernel string) string {
+	k := strings.ToLower(strings.TrimSpace(kernel))
+	if k == "" {
+		return ""
+	}
+	for _, m := range archMarkers {
+		if strings.Contains(k, m.marker) {
+			return m.arch
+		}
+	}
+	return ""
+}
+
+// hostMeta 主机元数据（全部取自 n9e 指标标签，缺失时为空映射，不阻断报告）。
+type hostMeta struct {
+	OS    map[string]string // ident -> 可读操作系统名（system_info）
+	IP    map[string]string // ident -> 主机真实 IP（system_info 的 host_ip）
+	Arch  map[string]string // ident -> CPU 架构（system_info 的 kernel_version 解析）
+	Agent map[string]string // ident -> categraf agent 版本（categraf_info 的 version 标签）
+	// Live 为当前在报 ident 的集合——system_info 是主机当前状态快照而非累计计数器，
+	// 可作为「运维改名后仍活跃的 ident」的权威依据，用于剔除留存期内的历史残留 ident。
+	Live map[string]bool
+}
+
+// fetchHostMeta 拉取各主机元数据：操作系统、真实 IP、CPU 架构、categraf 版本。
+// ip 用于补齐 ident 里不含 IP 的数据源（如「租户-项目-角色」形态的 ident，
+// 真实 IP 只存在于 system_info 的 host_ip 标签）。
+func (c *N9EClient) fetchHostMeta(ts int64) hostMeta {
+	meta := hostMeta{
+		OS:    map[string]string{},
+		IP:    map[string]string{},
+		Arch:  map[string]string{},
+		Agent: map[string]string{},
+		Live:  map[string]bool{},
+	}
 	// 瞬时查询只回溯时间点前 5 分钟内的样本：巡检窗口结束时间在未来时
 	// （如生成当前所在巡检周报告）按结束时间查必然为空，改用当前时间查询
 	if now := time.Now().Unix(); ts > now {
@@ -279,23 +341,39 @@ func (c *N9EClient) fetchHostMeta(ts int64) (osMap, ipMap map[string]string, liv
 	}
 	res, err := c.QueryInstant("system_info", ts)
 	if err != nil {
-		log.Debugf("system_info 查询失败（%v），表 3 操作系统列将留空。", err)
-		return osMap, ipMap, live
+		log.Debugf("system_info 查询失败（%v），表 3 操作系统 / CPU 架构列将留空。", err)
+	} else {
+		for _, s := range res {
+			id := s.Metric["ident"]
+			if id == "" {
+				continue
+			}
+			meta.Live[id] = true
+			if v := osDisplay(s.Metric); v != "" {
+				meta.OS[id] = v
+			}
+			if ip := strings.TrimSpace(s.Metric["host_ip"]); ip != "" {
+				meta.IP[id] = ip
+			}
+			if a := archOf(s.Metric["kernel_version"]); a != "" {
+				meta.Arch[id] = a
+			}
+		}
 	}
-	for _, s := range res {
-		id := s.Metric["ident"]
-		if id == "" {
-			continue
-		}
-		live[id] = true
-		if v := osDisplay(s.Metric); v != "" {
-			osMap[id] = v
-		}
-		if ip := strings.TrimSpace(s.Metric["host_ip"]); ip != "" {
-			ipMap[id] = ip
+	// categraf 自身监控指标带 ident + version 标签，是 agent 版本号的唯一来源
+	// （v0.4.36-<commit sha> 形态）。查询失败只影响该列，不影响主流程。
+	if res, err := c.QueryInstant("categraf_info", ts); err != nil {
+		log.Debugf("categraf_info 查询失败（%v），agent 版本将留空。", err)
+	} else {
+		for _, s := range res {
+			id := s.Metric["ident"]
+			v := strings.TrimSpace(s.Metric["version"])
+			if id != "" && v != "" {
+				meta.Agent[id] = v
+			}
 		}
 	}
-	return osMap, ipMap, live
+	return meta
 }
 
 func (c *N9EClient) QueryRange(expr string, start, end int64, step int) ([]promSeries, error) {
@@ -469,6 +547,8 @@ type HostRow struct {
 	NetPeak    float64
 	SampleRate float64
 	OS         string
+	Arch       string // CPU 架构（由 system_info 的 kernel_version 解析；内核串不含架构时为空）
+	AgentVer   string // categraf agent 版本（categraf_info 的 version 标签，用于清单核对）
 	// 派生
 	Status string
 	CPUGap float64
@@ -833,7 +913,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 		return nil, fmt.Errorf("n9e 未返回任何主机数据（表达式：%s），请检查数据源ID与时间范围。", n9eQueries["cores"])
 	}
 
-	osMap, hostIP, liveIdent := c.fetchHostMeta(end)
+	meta := c.fetchHostMeta(end)
 
 	keep := func(m map[string]string) bool {
 		id := m["ident"]
@@ -960,7 +1040,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 	for id := range cores {
 		idents = append(idents, id)
 	}
-	idents = dedupeByIdent(idents, hostIP, liveIdent)
+	idents = dedupeByIdent(idents, meta.IP, meta.Live)
 	sort.Slice(idents, func(i, j int) bool {
 		ki, _ := ipKey(idents[i])
 		kj, _ := ipKey(idents[j])
@@ -971,8 +1051,8 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 	for _, ident := range idents {
 		info := parseIdent(ident, layout, opts.EngineerTail)
 		// ident 不含 IP 段的数据源，用 system_info 的 host_ip 标签补齐真实 IP
-		if (info.IP == "—" || info.IP == "") && hostIP[ident] != "" {
-			info.IP = hostIP[ident]
+		if (info.IP == "—" || info.IP == "") && meta.IP[ident] != "" {
+			info.IP = meta.IP[ident]
 		}
 		cpuV := cpu[ident]
 		memV := memP[ident]
@@ -1022,7 +1102,9 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 			Net:        avg(netV),
 			NetPeak:    sliceMax(netV),
 			SampleRate: 1.0,
-			OS:         osMap[ident],
+			OS:         meta.OS[ident],
+			Arch:       meta.Arch[ident],
+			AgentVer:   meta.Agent[ident],
 		}
 		_, hasConn := conn[ident]
 		rec.NoConn = !hasConn
