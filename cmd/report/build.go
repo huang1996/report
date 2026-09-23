@@ -192,7 +192,8 @@ func BuildReport(in *BuildInput) (string, error) {
 	}
 
 	d := NewDocx()
-	d.HeaderText = cfg.HeaderText
+	d.HeaderText = headerVersion(cfg.HeaderText)
+	tn := &tableNo{}
 	d.Title(title)
 	// 生成日期与统计周期结束日期保持一致（报告口径统一按巡检周期末日）
 	d.MetaLine(fmt.Sprintf("巡检周期：%s　|　第 %d 周　|　生成日期：%s", period, week, in.WE.Format("2006-01-02")))
@@ -213,7 +214,7 @@ func BuildReport(in *BuildInput) (string, error) {
 			srcDesc = "Safeline WAF 数据库"
 		}
 	}
-	d.Table([]string{"项目", "内容", "项目", "内容"},
+	d.TableCentered([]string{"项目", "内容", "项目", "内容"},
 		[][]string{
 			{"报告名称", title, "巡检周期", period},
 			{"巡检对象", objDesc, "运维工程师", engineers},
@@ -257,10 +258,11 @@ func BuildReport(in *BuildInput) (string, error) {
 			{"网络带宽（单机）", sprintf("%.1f Mb/s", m["网络"].Cur), sprintf("%.1f Mb/s", m["网络"].Peak), sprintf("%.0f Mb/s", m["网络"].Mx), thAbsLabel(NET_TH, m["网络"].Lv, " Mb/s"), m["网络"].Lv},
 			{"并发连接数（合计）", comma(int64(m["连接数"].Cur)), "—", "—", thAbsLabel(CONN_TH, m["连接数"].Lv, " 条"), m["连接数"].Lv},
 		}
-		d.Table([]string{"关键指标", "当前均值", "峰值均值", "最高值", "告警阈值", "状态"}, kpi,
+		d.TableCentered([]string{"关键指标", "当前均值", "峰值均值", "最高值", "告警阈值", "状态"}, kpi,
 			[]float64{3.6, 2.4, 2.4, 2.4, 2.6, 1.8}, map[int]bool{5: true}, 9.5, false)
-		d.Caption("表 1　关键资源指标汇总（CPU/内存/磁盘：≥75% 提示、≥80% 警告、≥90% 严重、≥95% 紧急；内存＜20% 判定可优化；" +
-			"带宽按 1 Gb 出口、连接数为合计值）。磁盘使用率取各主机分区中最紧张者；网络带宽为出入向实测流量合计；并发连接数仅含已采集该指标的 Linux 主机。")
+		d.Caption(sprintf("表 %d　关键资源指标汇总（CPU/内存/磁盘：≥75%% 提示、≥80%% 警告、≥90%% 严重、≥95%% 紧急；内存＜20%% 判定可优化；", tn.next()) +
+			"带宽按 1 Gb 出口、连接数为合计值）。磁盘使用率为各主机全部本地挂载点按容量加权的整体使用率" +
+			"（非单分区最紧张值）；网络带宽为出入向实测流量合计；并发连接数仅含已采集该指标的 Linux 主机。")
 	} else {
 		d.Body("本期未采集到主机资源数据。")
 	}
@@ -303,9 +305,9 @@ func BuildReport(in *BuildInput) (string, error) {
 				sprintf("%.2f%%", r.Mem), sprintf("%.2f%%", r.MemPeak),
 				sprintf("%.2f%%", r.Disk), sprintf("%.2f%%", diskPeakOf(r)), r.Status})
 		}
-		d.Table([]string{"IP 地址", "CPU当前", "CPU峰值", "内存当前", "内存峰值", "磁盘当前", "磁盘峰值", "状态"},
+		d.TableCentered([]string{"IP 地址", "CPU当前", "CPU峰值", "内存当前", "内存峰值", "磁盘当前", "磁盘峰值", "状态"},
 			det, []float64{3.2, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.4}, map[int]bool{7: true}, 9, false)
-		d.Caption("表 2　资源巡检明细（CPU / 内存 / 磁盘，均为周期内均值与峰值；资源规格与归属见下表）")
+		d.Caption(sprintf("表 %d　资源巡检明细（CPU / 内存 / 磁盘，均为周期内均值与峰值；资源规格与归属见下表）", tn.next()))
 
 		headers := []string{"IP 地址", "主机角色", "CPU规格", "内存容量", "磁盘容量", "操作系统"}
 		widths := []float64{2.7, 3.3, 1.3, 1.5, 1.5, 3.0}
@@ -314,13 +316,13 @@ func BuildReport(in *BuildInput) (string, error) {
 			r := &rows[i]
 			own = append(own, []string{r.IP, orDash(r.Role),
 				sprintf("%.0f 核", r.Cores),
-				sprintf("%.0f GB", r.MemTotalGB), sprintf("%.0f GB", r.DiskCapGB),
+				sprintf("%.0f GB", r.MemTotalGB), fmtGB(r.DiskCapGB),
 				orDash(r.OS)})
 		}
-		// 操作系统列（文本较长，默认会被判为左对齐，此处强制居中）
+		// 操作系统列（文本较长，默认会被判为左对齐，此处强制整表居中）
 		// hideEmptyCols=false：即使个别主机取不到操作系统（显示「—」），列也不隐藏
-		d.TableCenterCols(map[int]bool{5: true}, headers, own, widths, nil, 9, false)
-		d.Caption("表 3　主机归属与资源规格")
+		d.TableCentered(headers, own, widths, nil, 9, false)
+		d.Caption(sprintf("表 %d　主机归属与资源规格（磁盘容量为该主机全部本地挂载点之和，同一设备只计一次，不含 NFS 等共享存储）", tn.next()))
 
 		var perf [][]string
 		for i := range rows {
@@ -333,9 +335,30 @@ func BuildReport(in *BuildInput) (string, error) {
 				sprintf("%.0f Mb/s", r.Net), sprintf("%.1f pp", r.CPUGap),
 				sprintf("%.1f pp", r.MemGap)})
 		}
-		d.Table([]string{"IP 地址", "磁盘 IO", "连接数", "网络流量", "CPU峰谷差", "内存峰谷差"},
+		d.TableCentered([]string{"IP 地址", "磁盘 IO", "连接数", "网络流量", "CPU峰谷差", "内存峰谷差"},
 			perf, []float64{3.6, 2.4, 2.3, 2.9, 2.6, 2.6}, nil, 9, true)
-		d.Caption("表 4　性能与网络指标明细（网络流量为出入向流量合计；连接数取自 netstat_tcp_inuse，Windows 主机未采集该指标，以「—」表示）")
+		d.Caption(sprintf("表 %d　性能与网络指标明细（网络流量为出入向流量合计；连接数取自 netstat_tcp_inuse，Windows 主机未采集该指标，以「—」表示）", tn.next()))
+
+		// 磁盘分区使用明细：逐挂载点列出真实分区，便于定位单分区打满风险
+		// （表 2/表 3 的磁盘使用率是整机加权值，单分区接近写满会被大盘稀释）
+		var parts [][]string
+		for i := range rows {
+			r := &rows[i]
+			for _, p := range r.DiskParts {
+				parts = append(parts, []string{
+					r.IP, p.Path, orDash(p.Fstype),
+					fmtGB(p.CapGB), fmtGB(p.CapGB * p.UsedPct / 100),
+					sprintf("%.2f%%", p.UsedPct), level("磁盘", p.UsedPct),
+				})
+			}
+		}
+		if len(parts) > 0 {
+			d.TableCentered([]string{"IP 地址", "挂载点", "文件系统", "容量", "已用", "使用率", "状态"},
+				parts, []float64{2.8, 4.0, 2.0, 2.0, 2.0, 1.9, 1.6}, map[int]bool{6: true}, 9, false)
+			d.Caption(sprintf("表 %d　磁盘分区使用明细（使用率为周期内均值；仅列出真实分区，已剔除 tmpfs / overlay 等"+
+				"内存文件系统与 /run、/dev、/sys 等运行时虚拟目录；同一设备挂载到多个路径（bind mount / Docker 子目录）"+
+				"时只保留一个代表挂载点。本表含 NFS 等共享存储，与表 3「不含共享存储」的容量口径不同，两表容量不可直接对照）", tn.next()))
+		}
 	}
 
 	// 五、业务巡检（内容留空，由人工填写；REPORT_INCLUDE_BIZ 控制是否添加，默认不添加）
@@ -349,7 +372,7 @@ func BuildReport(in *BuildInput) (string, error) {
 
 	// Web 应用防火墙安全巡检（融合自 safeline-report）
 	if in.Waf != nil {
-		buildWafChapter(d, in.Waf, ch)
+		buildWafChapter(d, in.Waf, ch, tn)
 		ch++
 	} else if in.WafNote != "" {
 		d.Heading(1, sprintf("%d、Web 应用防火墙安全巡检", ch))
@@ -373,9 +396,10 @@ func BuildReport(in *BuildInput) (string, error) {
 	if len(risks) == 0 {
 		risks = append(risks, []string{"R1", "本期未发现需要处置的风险项", "低", suggest("低")})
 	}
+	// 风险台账与下周巡检重点两节保留默认对齐：描述/建议为长文本，左对齐更易读
 	d.Table([]string{"编号", "风险描述", "等级", "建议措施"}, risks,
 		[]float64{1.3, 6.6, 1.4, 7.1}, map[int]bool{2: true}, 9, false)
-	d.Caption("表 5　风险台账（等级：紧急 / 严重 / 警告 / 提示 / 低；各等级对应固定处置措施，见建议措施列）")
+	d.Caption(sprintf("表 %d　风险台账（等级：紧急 / 严重 / 警告 / 提示 / 低；各等级对应固定处置措施，见建议措施列）", tn.next()))
 
 	// 下周巡检重点
 	d.Heading(1, sprintf("%d、下周巡检重点", ch+1))
@@ -390,7 +414,7 @@ func BuildReport(in *BuildInput) (string, error) {
 		plans = append(plans, []string{"1", "常规巡检"})
 	}
 	d.Table([]string{"序号", "巡检 / 跟进事项"}, plans, []float64{0.9, 15.7}, nil, 9, false)
-	d.Caption("表 6　下周重点工作计划")
+	d.Caption(sprintf("表 %d　下周重点工作计划", tn.next()))
 
 	if err := os.MkdirAll(cfg.ReportDir, 0o755); err != nil {
 		return "", err
@@ -426,7 +450,7 @@ func tryWrite(path string, d *Docx) error {
 
 // buildWafChapter 六、Web 应用防火墙安全巡检
 // buildWafChapter Web 应用防火墙安全巡检（章节号动态，含 n.1~n.4 小节）
-func buildWafChapter(d *Docx, w *WafData, ch int) {
+func buildWafChapter(d *Docx, w *WafData, ch int, tn *tableNo) {
 	h1 := sprintf("%d、Web 应用防火墙安全巡检", ch)
 	h2 := func(s string) string { return sprintf("%d.%s", ch, s) }
 	d.Heading(1, h1)
@@ -459,9 +483,9 @@ func buildWafChapter(d *Docx, w *WafData, ch int) {
 			rows = append(rows, []string{itoa(int(a.ID)), orDash(a.Name), orDash(a.Domains), orDash(a.Ports),
 				comma(a.Requests), comma(a.Blocked)})
 		}
-		d.Table([]string{"应用序号", "应用名称", "域名", "开放端口", "请求次数", "拦截次数"},
+		d.TableCentered([]string{"应用序号", "应用名称", "域名", "开放端口", "请求次数", "拦截次数"},
 			rows, []float64{1.6, 3.4, 4.6, 2.2, 2.2, 2.2}, nil, 9, false)
-		d.Caption("表 7　WAF 防护应用清单及周期内访问 / 拦截统计")
+		d.Caption(sprintf("表 %d　WAF 防护应用清单及周期内访问 / 拦截统计", tn.next()))
 	}
 
 	// n.2 访问数据统计
@@ -481,9 +505,9 @@ func buildWafChapter(d *Docx, w *WafData, ch int) {
 		for _, g := range geos {
 			rows = append(rows, []string{orDash(g.Country), orDash(g.Province), orDash(g.City), comma(g.Count)})
 		}
-		d.Table([]string{"国家代号", "省份", "城市", "访问次数"}, rows,
+		d.TableCentered([]string{"国家代号", "省份", "城市", "访问次数"}, rows,
 			[]float64{3.0, 4.0, 4.0, 4.0}, nil, 9, true)
-		cap := "表 8　按地理区域统计的访问数据"
+		cap := sprintf("表 %d　按地理区域统计的访问数据", tn.next())
 		if len(w.Geos) > 30 {
 			cap += fmt.Sprintf("（共 %d 个地区，此处展示访问次数前 30）", len(w.Geos))
 		}
@@ -499,7 +523,7 @@ func buildWafChapter(d *Docx, w *WafData, ch int) {
 			rows = append(rows, []string{s.IP, s.AttackType, comma(s.Count)})
 		}
 		d.TableCentered([]string{"访问 IP", "访问类型", "访问次数"}, rows, []float64{6.0, 5.0, 5.0}, nil, 9, false)
-		d.Caption("表 9　按访问 IP 统计的访问数据 TOP10")
+		d.Caption(sprintf("表 %d　按访问 IP 统计的访问数据 TOP10", tn.next()))
 	}
 
 	// n.3 攻击数据统计
@@ -526,8 +550,8 @@ func buildWafChapter(d *Docx, w *WafData, ch int) {
 		for _, at := range w.AttackTys {
 			rows = append(rows, []string{at.Type, comma(at.Count)})
 		}
-		d.Table([]string{"攻击类型", "攻击次数"}, rows, []float64{8.0, 8.0}, nil, 9, false)
-		d.Caption("图 6 / 表 10　攻击类型统计")
+		d.TableCentered([]string{"攻击类型", "攻击次数"}, rows, []float64{8.0, 8.0}, nil, 9, false)
+		d.Caption(sprintf("图 6 / 表 %d　攻击类型统计", tn.next()))
 	}
 	d.Heading(3, h2("3.2 按攻击 IP 统计攻击数据 TOP10"))
 	if len(w.AttackIPs) == 0 {
@@ -540,7 +564,7 @@ func buildWafChapter(d *Docx, w *WafData, ch int) {
 			rows = append(rows, []string{s.IP, s.AttackType, comma(s.Count)})
 		}
 		d.TableCentered([]string{"攻击 IP", "攻击类型", "攻击次数"}, rows, []float64{6.0, 5.0, 5.0}, nil, 9, false)
-		d.Caption("表 11　按攻击 IP 统计的攻击数据 TOP10")
+		d.Caption(sprintf("表 %d　按攻击 IP 统计的攻击数据 TOP10", tn.next()))
 	}
 
 	// n.4 未拦截攻击明细
@@ -554,14 +578,35 @@ func buildWafChapter(d *Docx, w *WafData, ch int) {
 			rows = append(rows, []string{orDash(r.App), orDash(r.SrcIP), orDash(r.Host), orDash(r.Path),
 				orDash(r.Port), orDash(r.Country), orDash(r.Province), orDash(r.City), orDash(r.AttackType), orDash(r.Time)})
 		}
-		d.Table([]string{"被攻击应用", "源 IP", "目标主机", "请求路径", "目标端口",
+		d.TableCentered([]string{"被攻击应用", "源 IP", "目标主机", "请求路径", "目标端口",
 			"国家代码", "省份", "城市", "攻击类型", "攻击时间"},
 			rows, []float64{2.4, 2.0, 2.0, 2.6, 1.4, 1.3, 1.3, 1.3, 1.7, 2.4}, nil, 8.5, true)
-		d.Caption("表 12　未拦截攻击明细")
+		d.Caption(sprintf("表 %d　未拦截攻击明细", tn.next()))
 	}
 }
 
 // ---- 小工具 ----
+
+// tableNo 表号计数器。表号统一按「在文档中出现的先后」递增，
+// 避免章节有无（业务巡检 / WAF 数据缺失）导致表号跳号或重号。
+type tableNo struct{ n int }
+
+func (t *tableNo) next() int { t.n++; return t.n }
+
+// headerVersion 在页眉文字后追加程序版本号，格式「<页眉>-0.1.x」。
+// 例如页眉「统筹运维项目」→「统筹运维项目-0.1.5」，便于区分不同版本生成的报告。
+func headerVersion(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = "统筹运维项目"
+	}
+	v := strings.TrimLeft(strings.TrimSpace(AppVersion), "vV")
+	if v == "" {
+		return s
+	}
+	return s + "-" + v
+}
+
 func diskPeakOf(r *HostRow) float64 {
 	if r.DiskPeak > 0 {
 		return r.DiskPeak
@@ -574,6 +619,15 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// fmtGB 容量显示：满 1 TB 起换算为 TB，避免出现「12275 GB」这类难读的大数。
+// 主机磁盘容量按全部本地挂载点合计后，多盘主机会达到 TB 量级。
+func fmtGB(gb float64) string {
+	if gb >= 1024 {
+		return sprintf("%.1f TB", gb/1024)
+	}
+	return sprintf("%.0f GB", gb)
 }
 
 func maxInt(a, b int) int {

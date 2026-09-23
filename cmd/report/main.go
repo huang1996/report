@@ -344,8 +344,32 @@ func demoRows() []HostRow {
 			SampleRate: 1.0, OS: s.os,
 		})
 	}
+	for i := range rows {
+		rows[i].DiskParts = demoDiskParts(&rows[i])
+	}
 	_ = now
 	return rows
+}
+
+// demoDiskParts 生成与主机容量自洽的分区明细，供本地验证「磁盘分区使用明细」表。
+// 分项容量之和等于主机的磁盘容量，便于人工核对两表口径。
+func demoDiskParts(r *HostRow) []DiskPart {
+	if strings.Contains(r.OS, "Windows") {
+		return []DiskPart{
+			{Path: `\C:`, Fstype: "NTFS", Device: "C:", CapGB: r.DiskCapGB * 0.4, UsedPct: clampPct(r.Disk + 1.1)},
+			{Path: `\D:`, Fstype: "NTFS", Device: "D:", CapGB: r.DiskCapGB * 0.6, UsedPct: clampPct(r.Disk - 2.2)},
+		}
+	}
+	parts := []DiskPart{
+		{Path: "/", Fstype: "ext4", Device: "sda2", CapGB: r.DiskCapGB * 0.28, UsedPct: clampPct(r.Disk + 2.4)},
+		{Path: "/data", Fstype: "xfs", Device: "dm-0", CapGB: r.DiskCapGB * 0.50, UsedPct: clampPct(r.Disk - 1.8)},
+	}
+	// 高水位主机多拆一个分区，便于观察状态列的分级着色
+	if r.Disk > 85 {
+		parts = append(parts,
+			DiskPart{Path: "/mnt", Fstype: "ext4", Device: "vdb1", CapGB: r.DiskCapGB * 0.22, UsedPct: clampPct(r.Disk + 5.6)})
+	}
+	return parts
 }
 
 func demoWaf() *WafData {

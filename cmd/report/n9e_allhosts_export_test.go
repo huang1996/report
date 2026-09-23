@@ -164,10 +164,11 @@ func TestExportAllHostsToExcel(t *testing.T) {
 	// 4. 自检：核对 ident 解析结果。
 	//    注意区分「代码缺陷」与「数据客观情况」——后者只记录、不判失败：
 	//      · ident 本身没有角色段（主机名即项目名，如 000011-192.168.4.6-泸州智慧治理平台）；
-	//      · 无 IP 段的数据源（租户-项目-角色，真实 IP 来自 system_info.host_ip）。
+	//      · 无 IP 段的数据源（租户-项目-角色，真实 IP 来自 system_info.host_ip）；
+	//      · 主机侧未上报 disk_total（磁盘容量为 0，需在主机上检查 categraf 的 disk 插件）。
 	//    同一主机的历史残留 ident 已由 dedupeByIdent 在采集阶段剔除，故此处 IP 必须规范。
-	var badIP, noRole, noSpec, inferredEng int
-	var badIPList, noRoleList []string
+	var badIP, noRole, noSpec, noDisk, inferredEng int
+	var badIPList, noRoleList, noDiskList []string
 	for _, h := range hosts {
 		// IP 必须能由「ident 中的 IP 段」或「host_ip 标签」给出；两者都拿不到才算真缺陷
 		if !ipRe.MatchString(h.IP) {
@@ -189,11 +190,24 @@ func TestExportAllHostsToExcel(t *testing.T) {
 			noSpec++
 			t.Logf("未取到核数：ds%d %s", h.DS, h.Ident)
 		}
+		// 磁盘容量取全部本地挂载点之和，正常不应为 0。
+		// 个别主机会因主机侧未上报 disk 指标而为 0（既有数据现状，非程序缺陷），
+		// 故与「角色缺失」同样只记录不判失败；若大面积缺失请核对 pickDiskReps 归并逻辑。
+		if h.DiskCapGB <= 0 {
+			noDisk++
+			noDiskList = append(noDiskList, sprintf("ds%d %s", h.DS, h.Ident))
+		}
 	}
-	t.Logf("自检：非法 IP %d 台 / 角色缺失 %d 台 / 核数缺失 %d 台 / 工程师被误推断 %d 台",
-		badIP, noRole, noSpec, inferredEng)
+	t.Logf("自检：非法 IP %d 台 / 角色缺失 %d 台 / 核数缺失 %d 台 / 磁盘容量缺失 %d 台 / 工程师被误推断 %d 台",
+		badIP, noRole, noSpec, noDisk, inferredEng)
 	if inferredEng > 0 {
 		t.Errorf("有 %d 台主机的运维工程师由 ident 推断而来，应恒为「—」（见 parseIdent 注释）", inferredEng)
+	}
+	if noDisk > 0 {
+		t.Logf("—— 磁盘容量缺失明细（主机侧未上报 disk_total，需在主机上检查 categraf 的 disk 采集插件）——")
+		for _, s := range noDiskList {
+			t.Logf("   %s", s)
+		}
 	}
 	if badIP > 0 {
 		t.Logf("—— 非法 IP 明细（ident 内无 IP 段且 host_ip 缺失；含服务端历史残留 ident）——")
@@ -294,7 +308,7 @@ func buildSheetXML(hosts []exportedHost) string {
 			{orDash(h.Role), 0},                   // 角色
 			{sprintf("%.0f 核", h.Cores), 0},       // CPU 规格
 			{sprintf("%.0f GB", h.MemTotalGB), 0}, // 内存容量
-			{sprintf("%.0f GB", h.DiskCapGB), 0},  // 磁盘容量
+			{fmtGB(h.DiskCapGB), 0},               // 磁盘容量（全部本地挂载点合计）
 			{orDash(h.OS), 0},                     // 操作系统
 			{h.Ident, 0},                          // ident 核对
 		}
