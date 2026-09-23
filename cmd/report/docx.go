@@ -20,6 +20,10 @@ const (
 	ruleColor = "1F3864"
 )
 
+// pageWidthCm 正文可用宽度（cm）。表格列宽之和超过该值会被等比压缩到页内；
+// 生成表格时可据此计算「吸收剩余宽度」的列（如列宽写 pageWidthCm - 其余列之和）。
+const pageWidthCm = 16.6
+
 // Run 富文本片段
 type Run struct {
 	Text  string
@@ -207,18 +211,18 @@ func (d *Docx) Table(headers []string, rows [][]string, widthsCm []float64, stat
 			keep = append(keep, i)
 		}
 	}
-	// 等比压缩列宽到页面内（16.6cm 可用宽度）
+	// 等比压缩列宽到页面内（pageWidthCm 可用宽度）
 	widths := make([]float64, len(keep))
 	tot := 0.0
 	for i, ki := range keep {
 		if ki < len(widthsCm) {
 			widths[i] = widthsCm[ki]
 		} else {
-			widths[i] = 16.6 / float64(len(keep))
+			widths[i] = pageWidthCm / float64(len(keep))
 		}
 		tot += widths[i]
 	}
-	target := 16.6
+	target := pageWidthCm
 	if tot > target {
 		for i := range widths {
 			widths[i] = widths[i] * target / tot

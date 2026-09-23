@@ -309,20 +309,28 @@ func BuildReport(in *BuildInput) (string, error) {
 			det, []float64{3.2, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.4}, map[int]bool{7: true}, 9, false)
 		d.Caption(sprintf("表 %d　资源巡检明细（CPU / 内存 / 磁盘，均为周期内均值与峰值；资源规格与归属见下表）", tn.next()))
 
-		headers := []string{"IP 地址", "主机角色", "CPU规格", "内存容量", "磁盘容量", "操作系统"}
-		widths := []float64{2.7, 3.3, 1.3, 1.5, 1.5, 3.0}
+		// 列宽：CPU 规格固定 1.5cm，CPU 架构紧随其后；操作系统列吸收页面剩余宽度
+		// （pageWidthCm 减去其余各列之和），用于容纳较长的系统全名
+		headers := []string{"IP 地址", "主机角色", "CPU规格", "CPU架构", "内存容量", "磁盘容量", "操作系统"}
+		fixed := []float64{2.7, 3.3, 1.5, 1.6, 1.5, 1.5}
+		osWidth := pageWidthCm
+		for _, w := range fixed {
+			osWidth -= w
+		}
+		widths := append(append([]float64{}, fixed...), osWidth)
 		var own [][]string
 		for i := range rows {
 			r := &rows[i]
 			own = append(own, []string{r.IP, orDash(r.Role),
-				sprintf("%.0f 核", r.Cores),
+				sprintf("%.0f 核", r.Cores), orDash(r.Arch),
 				sprintf("%.0f GB", r.MemTotalGB), fmtGB(r.DiskCapGB),
 				orDash(r.OS)})
 		}
 		// 操作系统列（文本较长，默认会被判为左对齐，此处强制整表居中）
 		// hideEmptyCols=false：即使个别主机取不到操作系统（显示「—」），列也不隐藏
 		d.TableCentered(headers, own, widths, nil, 9, false)
-		d.Caption(sprintf("表 %d　主机归属与资源规格（磁盘容量为该主机全部本地挂载点之和，同一设备只计一次，不含 NFS 等共享存储）", tn.next()))
+		d.Caption(sprintf("表 %d　主机归属与资源规格（磁盘容量为该主机全部本地挂载点之和，同一设备只计一次，不含 NFS 等共享存储；"+
+			"CPU 架构由主机内核版本串解析，Ubuntu / Windows 等内核串不含架构标记的主机以「—」表示）", tn.next()))
 
 		var perf [][]string
 		for i := range rows {

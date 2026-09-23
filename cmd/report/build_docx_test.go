@@ -10,6 +10,7 @@ import (
 	"archive/zip"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,43 @@ var (
 	reText  = regexp.MustCompile(`(?s)<w:t(?: [^>]*)?>(.*?)</w:t>`)
 	reCapNo = regexp.MustCompile(`表 (\d+)　`)
 	rePara  = regexp.MustCompile(`(?s)<w:p>.*?</w:p>`)
+	reGrid  = regexp.MustCompile(`<w:gridCol w:w="(\d+)"/>`)
 )
+
+// tableGrid 取表格各列宽度（dxa，1cm = 567）
+func tableGrid(t *testing.T, tb string) []float64 {
+	t.Helper()
+	var out []float64
+	for _, m := range reGrid.FindAllStringSubmatch(tb, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatalf("解析列宽失败：%q", m[1])
+		}
+		out = append(out, float64(n))
+	}
+	return out
+}
+
+// tableRows 取表格的数据行（跳过表头）各单元格文本
+func tableRows(tb string) [][]string {
+	rows := reRow.FindAllString(tb, -1)
+	var out [][]string
+	for i, row := range rows {
+		if i == 0 {
+			continue
+		}
+		var vals []string
+		for _, tc := range reCell.FindAllString(row, -1) {
+			var b strings.Builder
+			for _, m := range reText.FindAllStringSubmatch(tc, -1) {
+				b.WriteString(m[1])
+			}
+			vals = append(vals, b.String())
+		}
+		out = append(out, vals)
+	}
+	return out
+}
 
 // docxPart 读取 docx 中指定部件的内容
 func docxPart(t *testing.T, path, name string) string {
@@ -259,4 +296,69 @@ func TestDiskPartsTableContent(t *testing.T) {
 // isPseudoFSType 判断文件系统类型是否属于不应展示的伪文件系统
 func isPseudoFSType(fs string) bool {
 	return pseudoFSRe.MatchString(strings.ToLower(strings.TrimSpace(fs)))
+}
+
+// TestHostOwnTableColumns 表 3「主机归属与资源规格」的列构成与列宽：
+//   - CPU规格 之后必须有 CPU架构 列（架构取值 amd64 / arm64 等）；
+//   - CPU规格 列宽固定 1.5cm；
+//   - 操作系统列吸收页面剩余宽度，使整表铺满页面可用宽度（pageWidthCm）。
+func TestHostOwnTableColumns(t *testing.T) {
+	out := buildDemoDocx(t)
+	doc := docxPart(t, out, "word/document.xml")
+
+	var tb string
+	for _, x := range reTable.FindAllString(doc, -1) {
+		if strings.HasPrefix(tableHeader(x), "IP 地址|主机角色|CPU规格|CPU架构|") {
+			tb = x
+			break
+		}
+	}
+	if tb == "" {
+		t.Fatal("未找到表 3（表头应为 IP 地址|主机角色|CPU规格|CPU架构|内存容量|磁盘容量|操作系统）")
+	}
+	if got := tableHeader(tb); got != "IP 地址|主机角色|CPU规格|CPU架构|内存容量|磁盘容量|操作系统" {
+		t.Errorf("表 3 表头 = %q，与预期列构成不符", got)
+	}
+
+	grid := tableGrid(t, tb)
+	if len(grid) != 7 {
+		t.Fatalf("表 3 列数 = %d，期望 7（grid=%v）", len(grid), grid)
+	}
+	// 1cm = 567 dxa。CPU规格（第 3 列，下标 2）固定 1.5cm
+	if want := 1.5 * 567; grid[2] < want-2 || grid[2] > want+2 {
+		t.Errorf("CPU规格列宽 = %.0f dxa，期望约 %.0f dxa（1.5cm）", grid[2], want)
+	}
+	// 整表应铺满页面可用宽度（各列取整后允许数 dxa 的误差）
+	sum := 0.0
+	for _, w := range grid {
+		sum += w
+	}
+	if want := pageWidthCm * 567; sum < want-6 || sum > want+6 {
+		t.Errorf("表 3 总宽 = %.0f dxa，期望约 %.0f dxa（%.1fcm，操作系统列吸收剩余宽度）", sum, want, pageWidthCm)
+	}
+	// 操作系统列应明显宽于其余文本列（吸收剩余宽度）
+	if grid[6] <= grid[2] {
+		t.Errorf("操作系统列宽 = %.0f，应吸收剩余宽度并宽于 CPU规格列（%.0f）", grid[6], grid[2])
+	}
+
+	// 数据行：CPU架构列（第 4 列，下标 3）不得为空串，且应出现多种架构取值
+	archs := map[string]int{}
+	rows := tableRows(tb)
+	if len(rows) == 0 {
+		t.Fatal("表 3 没有数据行")
+	}
+	for _, r := range rows {
+		if len(r) != 7 {
+			t.Fatalf("表 3 数据行列数 = %d，期望 7：%v", len(r), r)
+		}
+		archs[r[3]]++
+	}
+	for a := range archs {
+		if a == "" {
+			t.Errorf("存在 CPU 架构为空的数据行（应显示「—」占位）：%v", archs)
+		}
+	}
+	if archs["amd64"] == 0 || archs["arm64"] == 0 {
+		t.Errorf("样例数据应同时包含 amd64 与 arm64 架构，实得 %v", archs)
+	}
 }
