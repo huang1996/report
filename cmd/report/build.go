@@ -594,7 +594,7 @@ type tableNo struct{ n int }
 func (t *tableNo) next() int { t.n++; return t.n }
 
 // headerVersion 在页眉文字后追加程序版本号，格式「<页眉>-0.1.x」。
-// 例如页眉「统筹运维项目」→「统筹运维项目-0.1.5」，便于区分不同版本生成的报告。
+// 例如页眉「统筹运维项目」→「统筹运维项目-0.1.6」，便于区分不同版本生成的报告。
 func headerVersion(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
