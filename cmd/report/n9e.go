@@ -23,6 +23,52 @@ const (
 	ioFilter   = `name!~"loop.*|sr[0-9]+|ram.*"`
 )
 
+// remoteFSRe 网络 / 共享文件系统前缀。这类挂载点不是主机自带存储，而且同一卷常被多台
+// 主机同时挂载，计入磁盘容量会重复计数并严重放大总量——实测有主机挂载了 100 TB 的
+// NFS 数据卷（对象网关后端），单台就能把全量容量统计抬高一个量级。
+var remoteFSRe = regexp.MustCompile(`^(?:nfs4?|cifs|smb|smbfs|fuse[.]|ceph|glusterfs|9p|afs|sshfs|davfs)`)
+
+// isRemoteFS 判断挂载点是否为网络/共享文件系统。
+func isRemoteFS(fstype string) bool {
+	return remoteFSRe.MatchString(strings.ToLower(strings.TrimSpace(fstype)))
+}
+
+// pseudoFSRe 伪文件系统：内存文件系统与内核接口目录，不对应真实磁盘分区。
+var pseudoFSRe = regexp.MustCompile(`^(?:tmpfs|devtmpfs|devpts|proc|procfs|sysfs|cgroup|cgroup2|overlay|overlayfs|squashfs|ramfs|rootfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|hugetlbfs|fusectl|nsfs|efivarfs|binfmt_misc|rpc_pipefs|selinuxfs|none|swap)$`)
+
+// pseudoPathPrefixes 伪挂载点前缀。这些目录由内核或容器运行时动态生成，
+// 不是需要关注的磁盘分区——例如 Docker 会在 /run/docker/runtime-runc/moby/<id>/ 下
+// 生成大量 runc.xxxxxx 挂载点，实测单个数据源可达上百条，全部属于噪音。
+var pseudoPathPrefixes = []string{"/run/", "/dev/", "/sys/", "/proc/", "/snap/", "/var/lib/docker/"}
+
+// isRealMount 判断某挂载点是否为「真实分区」，用于「磁盘分区使用明细」表。
+//
+// 过滤两类噪音：
+//  1. 伪文件系统（tmpfs / devtmpfs / overlay / proc / sysfs / efivarfs …）；
+//  2. 内核与容器运行时的虚拟目录（/run、/dev、/sys、/proc、/snap、/var/lib/docker）。
+//
+// Windows 盘符（如 `\C:`、`D:`）不以 `/` 开头，一律保留。
+// 注意 `/tmp`、`/boot` 等真实分区**不在**排除范围内。
+func isRealMount(path, fstype string) bool {
+	p := strings.TrimSpace(path)
+	if p == "" || p == "?" {
+		return false
+	}
+	if pseudoFSRe.MatchString(strings.ToLower(strings.TrimSpace(fstype))) {
+		return false
+	}
+	if !strings.HasPrefix(p, "/") {
+		return true // Windows 盘符
+	}
+	low := strings.ToLower(p)
+	for _, pre := range pseudoPathPrefixes {
+		if low == strings.TrimSuffix(pre, "/") || strings.HasPrefix(low, pre) {
+			return false
+		}
+	}
+	return true
+}
+
 var n9eQueries = map[string]string{
 	"cores":      "system_n_cpus",
 	"cpu":        "avg by (ident) (cpu_usage_active)",
@@ -415,6 +461,7 @@ type HostRow struct {
 	DiskCapGB  float64
 	Disk       float64
 	DiskPeak   float64
+	DiskParts  []DiskPart // 各挂载点的分区明细（表 5 磁盘分区使用明细）
 	DiskIO     float64
 	Conn       float64
 	NoConn     bool
@@ -577,6 +624,188 @@ func ipKeyOf(ident string) string {
 	return ""
 }
 
+// diskVol 单个挂载点的容量元信息（来自 disk_total 指标）。
+type diskVol struct {
+	device string
+	fstype string
+	total  float64 // 字节
+}
+
+// DiskPart 单个挂载点的分区明细，用于「磁盘分区使用明细」表。
+type DiskPart struct {
+	Path    string  // 挂载点
+	Fstype  string  // 文件系统类型（ext4 / xfs / NTFS / nfs4 …）
+	Device  string  // 设备名（dm-0 / sda2 / C: / 远端 NFS 路径）
+	CapGB   float64 // 容量（GB）
+	UsedPct float64 // 周期内平均使用率
+}
+
+// diskRep 归并后的代表挂载点
+type diskRep struct {
+	path  string
+	total float64
+}
+
+// betterDiskRep 判断候选代表挂载点是否更优：容量大者优先；容量相同取路径更短者
+// （bind mount / Docker 子目录的路径通常更长），再按字典序兜底，
+// 保证同一份数据多次运行选出的代表路径稳定（map 遍历顺序是随机的）。
+func betterDiskRep(a, b diskRep) bool {
+	if a.total != b.total {
+		return a.total > b.total
+	}
+	if len(a.path) != len(b.path) {
+		return len(a.path) < len(b.path)
+	}
+	return a.path < b.path
+}
+
+// pickDiskDevReps 按「设备」归并挂载点，返回 设备键 → 代表挂载点。
+// 同一块块设备常被挂载到多个路径（bind mount、Docker 子目录等），
+// 按挂载点直接相加会重复计数——实测 dm-0 同时挂在 /data、/mnt/arkbase_backups、
+// /mnt/arkbase_backups2（各 999 GB），相加会虚增 3 倍。
+// skipRemote 为 true 时跳过网络/共享文件系统。
+func pickDiskDevReps(vols map[string]diskVol, skipRemote bool) map[string]diskRep {
+	best := map[string]diskRep{}
+	for path, v := range vols {
+		if skipRemote && isRemoteFS(v.fstype) {
+			continue
+		}
+		key := v.device
+		if key == "" {
+			key = "path:" + path
+		}
+		cand := diskRep{path: path, total: v.total}
+		if cur, ok := best[key]; !ok || betterDiskRep(cand, cur) {
+			best[key] = cand
+		}
+	}
+	return best
+}
+
+// diskPartsOf 把一台主机的挂载点整理成按挂载点排序的分区明细，用于「磁盘分区使用明细」表。
+//
+// 两步收敛：
+//  1. 剔除伪分区（tmpfs / overlay 等内存文件系统，以及 /run、/dev、/sys 等运行时虚拟目录）；
+//  2. 同一设备挂到多个路径时只保留一个代表路径，避免同一块盘出现多行重复数据。
+//
+// 与表 3 的容量口径差异：本函数**不排除** NFS 等共享存储（共享存储同样是会写满的分区），
+// 故两表容量不可直接对照。
+func diskPartsOf(vols map[string]diskVol, seq map[string][][2]float64) []DiskPart {
+	if len(vols) == 0 {
+		return nil
+	}
+	// 先剔伪分区再归并，避免某设备的代表路径恰好落在被剔除的伪挂载点上
+	real := make(map[string]diskVol, len(vols))
+	for path, v := range vols {
+		if isRealMount(path, v.fstype) {
+			real[path] = v
+		}
+	}
+	if len(real) == 0 {
+		return nil
+	}
+	keep := map[string]bool{}
+	for _, r := range pickDiskDevReps(real, false) {
+		keep[r.path] = true
+	}
+
+	out := make([]DiskPart, 0, len(real))
+	for path, v := range real {
+		if !keep[path] {
+			continue
+		}
+		out = append(out, DiskPart{
+			Path:    path,
+			Fstype:  v.fstype,
+			Device:  v.device,
+			CapGB:   v.total / (1 << 30),
+			UsedPct: avg(pairVals(seq[path])),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// pairVals 取出 (ts, val) 序列中的值部分
+func pairVals(pairs [][2]float64) []float64 {
+	out := make([]float64, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p[1])
+	}
+	return out
+}
+
+// pickDiskReps 把一台主机的挂载点归并成「参与统计的挂载点」集合，返回总容量（字节）
+// 与「代表挂载点 → 容量（字节）」。
+//
+// 两个必要的收敛动作：
+//  1. **按设备去重**（见 pickDiskDevReps）：同一块块设备常被挂载到多个路径
+//     （bind mount、Docker 子目录等），按挂载点直接相加会重复计数；
+//  2. **剔除网络/共享文件系统**：不是主机自带容量，且可能被多台主机重复挂载。
+//
+// 若剔除共享存储后一个挂载点都不剩（主机只挂了 NFS），回退为全部计入，
+// 避免容量被显示成 0。
+func pickDiskReps(vols map[string]diskVol) (float64, map[string]float64) {
+	toMap := func(reps map[string]diskRep) map[string]float64 {
+		out := make(map[string]float64, len(reps))
+		for _, r := range reps {
+			out[r.path] = r.total
+		}
+		return out
+	}
+
+	reps := toMap(pickDiskDevReps(vols, true))
+	if len(reps) == 0 {
+		reps = toMap(pickDiskDevReps(vols, false))
+	}
+	total := 0.0
+	for _, v := range reps {
+		total += v
+	}
+	return total, reps
+}
+
+// weightedDisk 按容量加权求逐时刻的整体磁盘使用率：
+//
+//	使用率(ts) = Σ(挂载点容量 × 该挂载点使用率(ts)) / Σ(有数据的挂载点容量)
+//
+// 与「容量 = 全部挂载点合计」保持同一口径，避免出现「容量是整个盘、使用率只是某个
+// 分区」这种分子分母不匹配的情况。返回按时间升序的使用率序列。
+func weightedDisk(reps map[string]float64, seq map[string][][2]float64) []float64 {
+	at := make(map[string]map[float64]float64, len(reps))
+	tsSet := map[float64]bool{}
+	for path := range reps {
+		m := make(map[float64]float64, len(seq[path]))
+		for _, pv := range seq[path] {
+			m[pv[0]] = pv[1]
+			tsSet[pv[0]] = true
+		}
+		at[path] = m
+	}
+	tsList := make([]float64, 0, len(tsSet))
+	for ts := range tsSet {
+		tsList = append(tsList, ts)
+	}
+	sort.Slice(tsList, func(i, j int) bool { return tsList[i] < tsList[j] })
+
+	out := make([]float64, 0, len(tsList))
+	for _, ts := range tsList {
+		num, den := 0.0, 0.0
+		for path, cap := range reps {
+			p, ok := at[path][ts]
+			if !ok {
+				continue
+			}
+			num += cap * p
+			den += cap
+		}
+		if den > 0 {
+			out = append(out, num/den)
+		}
+	}
+	return out
+}
+
 // ReadN9E 从 n9e 采集 [start,end] 窗口内各主机指标；opts.Filter 非空时按 ident 关键字过滤
 func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRow, error) {
 	c.login()
@@ -619,7 +848,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 	conn := map[string][]float64{}
 	io := map[string][][][2]float64{}            // ident -> series -> [(ts, val)]
 	disk := map[string]map[string][][2]float64{} // ident -> path -> [(ts, val)]
-	dtot := map[[2]string]float64{}              // (ident, path) -> total bytes
+	dtot := map[string]map[string]diskVol{}      // ident -> path -> 容量元信息
 
 	for _, s := range data["cores"] {
 		if id := s.Metric["ident"]; id != "" && keep(s.Metric) {
@@ -700,9 +929,16 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 		if path == "" {
 			path = s.Metric["device"]
 		}
-		key := [2]string{id, path}
-		if v, ok := lastVal(s); ok && v > dtot[key] {
-			dtot[key] = v
+		v, ok := lastVal(s)
+		if !ok {
+			continue
+		}
+		if dtot[id] == nil {
+			dtot[id] = map[string]diskVol{}
+		}
+		// 同一 (ident, path) 可能出现多条序列（设备变更等），取容量最大者
+		if cur, exists := dtot[id][path]; !exists || v > cur.total {
+			dtot[id][path] = diskVol{device: s.Metric["device"], fstype: s.Metric["fstype"], total: v}
 		}
 	}
 
@@ -742,36 +978,13 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 		memV := memP[ident]
 		netV := net[ident]
 
-		// 磁盘：逐时刻选出使用率最高的分区；容量取该分区总容量
-		var diskVals []float64
-		var diskCap float64
-		var bestTs float64
-		var bestPath string
-		best := map[float64][2]interface{}{} // ts -> (pct, path)
-		for path, pairs := range disk[ident] {
-			for _, pv := range pairs {
-				ts, v := pv[0], pv[1]
-				if cur, ok := best[ts]; !ok || v > cur[0].(float64) {
-					best[ts] = [2]interface{}{v, path}
-				}
-			}
-		}
-		tsList := make([]float64, 0, len(best))
-		for ts := range best {
-			tsList = append(tsList, ts)
-		}
-		sort.Slice(tsList, func(i, j int) bool { return tsList[i] < tsList[j] })
-		for _, ts := range tsList {
-			cur := best[ts]
-			diskVals = append(diskVals, cur[0].(float64))
-			if cur[0].(float64) > bestTs || bestPath == "" {
-				bestTs = cur[0].(float64)
-				bestPath = cur[1].(string)
-			}
-		}
-		if bestPath != "" {
-			diskCap = dtot[[2]string{ident, bestPath}] / GB
-		}
+		// 磁盘容量：全部本地挂载点之和（同一设备只计一次，不含 NFS 等共享存储）
+		diskCapBytes, diskReps := pickDiskReps(dtot[ident])
+		diskCap := diskCapBytes / GB
+		// 磁盘使用率：按挂载点容量加权，与容量口径保持一致
+		diskVals := weightedDisk(diskReps, disk[ident])
+		// 分区明细：逐挂载点列出真实分区（已剔除 tmpfs、/run、/dev 等伪分区）
+		diskParts := diskPartsOf(dtot[ident], disk[ident])
 
 		// 多块磁盘：每个时刻取利用率最高的那块
 		perTs := map[float64]float64{}
@@ -804,6 +1017,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 			DiskCapGB:  diskCap,
 			Disk:       avg(diskVals),
 			DiskPeak:   sliceMax(diskVals),
+			DiskParts:  diskParts,
 			DiskIO:     avg(ioVals),
 			Net:        avg(netV),
 			NetPeak:    sliceMax(netV),
