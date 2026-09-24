@@ -137,7 +137,10 @@ func resetFakeBaselineCache() {
 
 // unreachableN9E 指向一个必然连不上的地址，用于模拟「基准查询失败」
 func unreachableN9E(ds string) *N9EClient {
-	return NewN9EClient("http://127.0.0.1:1", ds, "", "", "", 2*time.Second, false)
+	cli := NewN9EClient("http://127.0.0.1:1", ds, "", "", "", 2*time.Second, false)
+	// 连接被拒属确定性失败，关掉重试以免测试白等 20s+（默认退避 3s+6s+12s）
+	cli.SetRetry(1, 0)
+	return cli
 }
 
 // TestCaptureFakeBaselineQueryFailed 基准查询失败即返回错误，不再回退到任何本地缓存

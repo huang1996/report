@@ -273,8 +273,16 @@ func maskURL(u string) string {
 	return u
 }
 
+// newN9EClient 按配置创建 n9e 客户端，并应用重试参数（-n9e_retry / N9E_RETRY 等）。
+// 夜莺经网关访问偶发 502 / 超时，重试能避免整份报告缺失资源巡检数据。
+func newN9EClient(cfg *Config, ds string, timeout time.Duration) *N9EClient {
+	cli := NewN9EClient(cfg.Base, ds, cfg.Token, cfg.User, cfg.Pass, timeout, cfg.Insecure)
+	cli.SetRetry(cfg.RetryAttempts, time.Duration(cfg.RetryBackoff)*time.Second)
+	return cli
+}
+
 func runListDS(cfg *Config) {
-	cli := NewN9EClient(cfg.Base, "1", cfg.Token, cfg.User, cfg.Pass, 60*time.Second, cfg.Insecure)
+	cli := newN9EClient(cfg, "1", 60*time.Second)
 	cli.login()
 	dss, err := cli.ListDatasources()
 	if err != nil {
@@ -417,14 +425,14 @@ func runOnce(cfg *Config, ws, we time.Time) {
 		ds := cfg.DS
 		if cfg.DS == "1" && cfg.Project != "" && os.Getenv("N9E_DS_ID") == "" {
 			// 未明确指定数据源 → 按项目名检索
-			cli := NewN9EClient(cfg.Base, "1", cfg.Token, cfg.User, cfg.Pass, 60*time.Second, cfg.Insecure)
+			cli := newN9EClient(cfg, "1", 60*time.Second)
 			if id, err := ResolveDSByProject(cfg.Project, cli, cfg.MaxDS); err == nil {
 				ds = id
 			} else {
 				log.Errorf("%v", err)
 			}
 		}
-		cli := NewN9EClient(cfg.Base, ds, cfg.Token, cfg.User, cfg.Pass, 180*time.Second, cfg.Insecure)
+		cli := newN9EClient(cfg, ds, 180*time.Second)
 		res, err := ReadN9E(cli, ws.Unix(), we.Unix(), cfg.Step, identOpts(cfg))
 		if err != nil {
 			log.Errorf("n9e 采集失败：%v", err)

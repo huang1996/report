@@ -16,6 +16,8 @@ type Config struct {
 	DSExplicit                  bool   // N9E_DS_ID 是否被显式指定（env 或参数）
 	Project                     string // 项目名关键字（ident 过滤 / 自动检索数据源）
 	MaxDS                       int
+	RetryAttempts               int    // n9e 请求瞬时错误的重试总次数（含首次），1=不重试
+	RetryBackoff                int    // n9e 重试首次退避秒数（之后翻倍）
 	Layout                      string // auto / section-first / project-first
 	EngineerTail                string // 【已弃用】曾用于从 ident 推断工程师，现仅兼容旧配置
 	Insecure                    bool
@@ -175,6 +177,8 @@ func parseConfig() *Config {
 	c.Project = env("N9E_PROJECT", "")
 	c.MaxDS = envInt("N9E_MAX_DS", 90)
 	c.EngineerTail = env("N9E_IDENT_ENGINEER_TAIL", "auto")
+	c.RetryAttempts = envInt("N9E_RETRY", defaultRetryAttempts)
+	c.RetryBackoff = envInt("N9E_RETRY_BACKOFF", defaultRetryBaseSec)
 	c.Title = env("REPORT_NAME", "")
 	c.Engineer = env("REPORT_ENGINEER", "")
 	c.DatabaseURL = env("WAF_DATABASE_URL", env("DATABASE_URL", "")) // DATABASE_URL 为旧名，兼容保留
@@ -201,6 +205,10 @@ func parseConfig() *Config {
 	f.StringVar(&c.Pass, "n9e_pass", c.Pass, "登录密码（可选）")
 	f.StringVar(&c.Project, "n9e_project", c.Project, "项目名关键字，如「智慧民政」；未指定 -n9e_ds_id 时自动在全部数据源中检索")
 	f.IntVar(&c.MaxDS, "n9e_max_ds", c.MaxDS, "自动检索数据源时的最大编号")
+	f.IntVar(&c.RetryAttempts, "n9e_retry", c.RetryAttempts,
+		"n9e 请求遇瞬时错误（502/超时等）的重试总次数（含首次），1=不重试")
+	f.IntVar(&c.RetryBackoff, "n9e_retry_backoff", c.RetryBackoff,
+		"n9e 重试的首次退避秒数，之后按 2 倍递增（单次上限 30s）")
 	f.StringVar(&c.Layout, "layout", "auto", "ident 命名规则：auto/section-first/project-first")
 	f.StringVar(&c.EngineerTail, "ident_engineer_tail", c.EngineerTail,
 		"【已弃用】曾用于从 ident 末尾段推断运维工程师；现工程师只认 -report_engineer，此项不再生效")

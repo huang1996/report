@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -22,6 +23,54 @@ const (
 	ifFilter   = `interface!~"veth.*|br-.*|docker.*|vni.*|cni.*|flannel.*|lo|virbr.*|tun.*|tap.*|vnet.*|virb.*"`
 	ioFilter   = `name!~"loop.*|sr[0-9]+|ram.*"`
 )
+
+// n9e 请求重试参数。夜莺经网关访问，偶发 502 / 响应头超时（实测即
+// `HTTP 502: net/http: timeout awaiting response headers`，服务端瞬时不可用，
+// 过一会儿重试即可成功）；而单次失败会让整份报告缺失资源巡检数据（正文只剩
+// WAF 章节），代价过高。因此对「瞬时错误」做指数退避重试，非瞬时错误不重试。
+const (
+	defaultRetryAttempts = 4 // 总尝试次数（含首次）
+	defaultRetryBaseSec  = 3 // 首次退避间隔（秒），配置层与服务端共用
+	defaultRetryBase     = defaultRetryBaseSec * time.Second
+	retryJitterRatio     = 0.2              // 退避时长抖动（±20%），避免多个查询同时重试造成尖峰
+	maxRetryDelay        = 30 * time.Second // 单次退避上限
+)
+
+// retryableStatus 判断 HTTP 状态码是否属于「稍后重试可能成功」的瞬时错误：
+// 5xx 为服务端 / 网关瞬时故障，429 为限流，408 为请求超时。
+// 其余 4xx 重试无意义——400 是查询语法错误、401/403 是鉴权、404 是路由不存在。
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// retryDelay 计算第 attempt 次重试前的退避时长（attempt 从 1 开始）：
+// base × 2^(attempt-1)，叠加 ±20% 抖动，上限 maxRetryDelay。
+func retryDelay(base time.Duration, attempt int) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	d := base
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d >= maxRetryDelay {
+			return maxRetryDelay
+		}
+	}
+	d = time.Duration(float64(d) * (1 + (rand.Float64()*2-1)*retryJitterRatio))
+	if d > maxRetryDelay {
+		return maxRetryDelay
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
 
 // remoteFSRe 网络 / 共享文件系统前缀。这类挂载点不是主机自带存储，而且同一卷常被多台
 // 主机同时挂载，计入磁盘容量会重复计数并严重放大总量——实测有主机挂载了 100 TB 的
@@ -91,6 +140,10 @@ type N9EClient struct {
 	timeout  time.Duration
 	http     *http.Client
 	hdr      map[string]string
+
+	// 瞬时错误重试（默认 defaultRetryAttempts / defaultRetryBase，可用 -n9e_retry 等覆盖）
+	retryAttempts int
+	retryBase     time.Duration
 }
 
 func NewN9EClient(base, ds, token, user, password string, timeout time.Duration, insecure bool) *N9EClient {
@@ -99,15 +152,41 @@ func NewN9EClient(base, ds, token, user, password string, timeout time.Duration,
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return &N9EClient{
-		base:     strings.TrimRight(base, "/"),
-		ds:       ds,
-		token:    token,
-		user:     user,
-		password: password,
-		timeout:  timeout,
-		http:     &http.Client{Timeout: timeout, Transport: tr},
-		hdr:      map[string]string{},
+		base:          strings.TrimRight(base, "/"),
+		ds:            ds,
+		token:         token,
+		user:          user,
+		password:      password,
+		timeout:       timeout,
+		http:          &http.Client{Timeout: timeout, Transport: tr},
+		hdr:           map[string]string{},
+		retryAttempts: defaultRetryAttempts,
+		retryBase:     defaultRetryBase,
 	}
+}
+
+// SetRetry 设置瞬时错误的请求重试：attempts 为总尝试次数（含首次，<1 视为 1 = 不重试），
+// base 为首次退避间隔（<=0 表示沿用默认值）。
+func (c *N9EClient) SetRetry(attempts int, base time.Duration) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	c.retryAttempts = attempts
+	if base > 0 {
+		c.retryBase = base
+	}
+}
+
+// retryCfg 返回生效的重试参数（字段为零值时回落到默认值）
+func (c *N9EClient) retryCfg() (int, time.Duration) {
+	attempts, base := c.retryAttempts, c.retryBase
+	if attempts < 1 {
+		attempts = defaultRetryAttempts
+	}
+	if base <= 0 {
+		base = defaultRetryBase
+	}
+	return attempts, base
 }
 
 func (c *N9EClient) login() {
@@ -177,24 +256,60 @@ func dsID(v interface{}) int {
 	return 0
 }
 
+// getJSON 发起 GET 并解析 JSON；对瞬时错误按指数退避重试。
+// 每次失败都会记一条 WARN（含第几次 / 共几次 / 下次间隔），便于事后判断到底是
+// 「网关抖动、重试已救回」还是「持续故障」。超过重试次数后返回最后一次错误，
+// 并在错误里标注已重试次数。
 func (c *N9EClient) getJSON(u string, out interface{}) error {
+	attempts, base := c.retryCfg()
+	var err error
+	retried := 0
+	for attempt := 1; ; attempt++ {
+		var retryable bool
+		err, retryable = c.getJSONOnce(u, out)
+		if err == nil {
+			return nil
+		}
+		if !retryable || attempt >= attempts {
+			break
+		}
+		d := retryDelay(base, attempt)
+		log.Warnf("n9e 请求失败（第 %d/%d 次）：%v；%s 后重试。", attempt, attempts, err, d.Round(time.Millisecond))
+		time.Sleep(d)
+		retried++
+	}
+	// 只有真的重试过才标注次数，避免非瞬时错误（如 400）被误读成「重试无果」
+	if retried > 0 {
+		err = fmt.Errorf("%v（已重试 %d 次）", err, retried)
+	}
+	return err
+}
+
+// getJSONOnce 单次请求，返回错误以及该错误是否值得重试。
+func (c *N9EClient) getJSONOnce(u string, out interface{}) (error, bool) {
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
-		return err
+		return err, false // 请求构造失败属代码 / 配置问题，重试无意义
 	}
 	for k, v := range c.hdr {
 		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		// 连接被重置 / 读写超时 / 网关返回 502 等，多为瞬时
+		return err, true
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(raw))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))),
+			retryableStatus(resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		// 200 但正文不是 JSON：网关异常时会返回错误页 / 首页 HTML，属瞬时
+		return fmt.Errorf("响应解析失败: %v", err), true
+	}
+	return nil, false
 }
 
 func (c *N9EClient) api(path string, ds string) string {
