@@ -322,7 +322,7 @@ func BuildReport(in *BuildInput) (string, error) {
 		for i := range rows {
 			r := &rows[i]
 			own = append(own, []string{r.IP, orDash(r.Role),
-				sprintf("%.0f 核", r.Cores), orDash(r.Arch),
+				sprintf("%.0f 核", r.Cores), orDefaultArch(r.Arch),
 				sprintf("%.0f GB", r.MemTotalGB), fmtGB(r.DiskCapGB),
 				orDash(r.OS)})
 		}
@@ -330,7 +330,7 @@ func BuildReport(in *BuildInput) (string, error) {
 		// hideEmptyCols=false：即使个别主机取不到操作系统（显示「—」），列也不隐藏
 		d.TableCentered(headers, own, widths, nil, 9, false)
 		d.Caption(sprintf("表 %d　主机归属与资源规格（磁盘容量为该主机全部本地挂载点之和，同一设备只计一次，不含 NFS 等共享存储；"+
-			"CPU 架构由主机内核版本串解析，Ubuntu / Windows 等内核串不含架构标记的主机以「—」表示）", tn.next()))
+			"CPU 架构由主机内核版本串解析，内核串不含架构标记（Ubuntu 通用内核、Windows）或取不到 system_info 的主机按 %s 计）", tn.next(), defaultArch))
 
 		var perf [][]string
 		for i := range rows {

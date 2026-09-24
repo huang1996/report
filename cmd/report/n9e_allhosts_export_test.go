@@ -2,7 +2,8 @@ package main
 
 // n9e_allhosts_export_test.go —— 按当前处理逻辑遍历 n9e 全部数据源，
 // 把每台主机的「IP / 主机角色 / CPU规格 / CPU架构 / 内存容量 / 磁盘容量 / 操作系统」
-// （即报告中表 3 的字段）加上「agent 版本」导出为 xlsx，便于人工核对 ident 解析与采集结果。
+// （即报告中表 4 的字段）加上「agent 版本」导出为 xlsx，便于人工核对 ident 解析与采集结果。
+// CPU 架构无法判定时按 defaultArch（amd64）兜底，故该列恒有值。
 //
 // 默认跳过（需要连真实 n9e）；执行方式：
 //
@@ -190,13 +191,14 @@ func TestExportAllHostsToExcel(t *testing.T) {
 			noSpec++
 			t.Logf("未取到核数：ds%d %s", h.DS, h.Ident)
 		}
-		// CPU 架构与 agent 版本都是「尽量采集」的辅助信息，缺失只统计不判失败：
-		//   · 架构取自 system_info 的 kernel_version——Ubuntu（-generic）与 Windows 的内核串
-		//     本身不含架构标记，取不到属数据客观情况，需在主机侧补采才能覆盖；
-		//   · agent 版本取自 categraf_info，凡在报主机均应带 ident + version 标签，
-		//     缺失说明该主机未暴露 categraf 自身指标，值得逐个核查。
+		// agent 版本取自 categraf_info，凡在报主机均应带 ident + version 标签，
+		// 缺失说明该主机未暴露 categraf 自身指标，值得逐个核查；只统计不判失败。
+		// CPU 架构则**恒应有值**：取自 system_info 的 kernel_version，内核串不含架构标记
+		// （Ubuntu -generic / Windows）或整台主机没有 system_info 时，由 archOrDefault /
+		// orDefaultArch 回落到 amd64（见 defaultArch 注释）。出现空串即兜底失效，判失败。
 		if h.Arch == "" {
 			noArch++
+			t.Errorf("CPU 架构恒应有值（无法判定时按 %s 兜底）：ds%d %s", defaultArch, h.DS, h.Ident)
 		}
 		if h.AgentVer == "" {
 			noAgent++
@@ -211,7 +213,7 @@ func TestExportAllHostsToExcel(t *testing.T) {
 		}
 	}
 	t.Logf("自检：非法 IP %d 台 / 角色缺失 %d 台 / 核数缺失 %d 台 / 磁盘容量缺失 %d 台 / "+
-		"CPU架构缺失 %d 台 / agent版本缺失 %d 台 / 工程师被误推断 %d 台",
+		"CPU架构为空(异常) %d 台 / agent版本缺失 %d 台 / 工程师被误推断 %d 台",
 		badIP, noRole, noSpec, noDisk, noArch, noAgent, inferredEng)
 	if inferredEng > 0 {
 		t.Errorf("有 %d 台主机的运维工程师由 ident 推断而来，应恒为「—」（见 parseIdent 注释）", inferredEng)
@@ -332,7 +334,7 @@ func buildSheetXML(hosts []exportedHost) string {
 			{h.IP, 0},                             // IP：文本，避免被识别成数字
 			{orDash(h.Role), 0},                   // 角色
 			{sprintf("%.0f 核", h.Cores), 0},       // CPU 规格
-			{orDash(h.Arch), 0},                   // CPU 架构（内核版本串解析）
+			{h.Arch, 0},                           // CPU 架构（内核串解析，无法判定时已兜底为 defaultArch）
 			{sprintf("%.0f GB", h.MemTotalGB), 0}, // 内存容量
 			{fmtGB(h.DiskCapGB), 0},               // 磁盘容量（全部本地挂载点合计）
 			{orDash(h.OS), 0},                     // 操作系统

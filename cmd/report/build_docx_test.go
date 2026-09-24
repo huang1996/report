@@ -341,7 +341,8 @@ func TestHostOwnTableColumns(t *testing.T) {
 		t.Errorf("操作系统列宽 = %.0f，应吸收剩余宽度并宽于 CPU规格列（%.0f）", grid[6], grid[2])
 	}
 
-	// 数据行：CPU架构列（第 4 列，下标 3）不得为空串，且应出现多种架构取值
+	// 数据行：CPU架构列（第 4 列，下标 3）恒有值——无法判定时按 defaultArch 兜底，
+	// 不得出现空串或「—」占位；样例数据应同时含 amd64 与 arm64 以验证取值来自解析
 	archs := map[string]int{}
 	rows := tableRows(tb)
 	if len(rows) == 0 {
@@ -354,8 +355,8 @@ func TestHostOwnTableColumns(t *testing.T) {
 		archs[r[3]]++
 	}
 	for a := range archs {
-		if a == "" {
-			t.Errorf("存在 CPU 架构为空的数据行（应显示「—」占位）：%v", archs)
+		if a == "" || a == "—" {
+			t.Errorf("CPU 架构列应恒有值（兜底为 %s），实得 %q：%v", defaultArch, a, archs)
 		}
 	}
 	if archs["amd64"] == 0 || archs["arm64"] == 0 {

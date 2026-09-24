@@ -413,7 +413,7 @@ var archMarkers = []struct{ marker, arch string }{
 // 如 CentOS 的 3.10.0-1160.el7.x86_64、麒麟的 4.19.90-52.22.v2207.ky10.x86_64、
 // openEuler 的 6.6.0-159.4.3.154.oe2403sp4.aarch64；
 // 而 Ubuntu 的 6.8.0-60-generic 与 Windows 的 10.0.14393 Build 14393 不含架构信息，
-// 这类主机返回空串（报告中显示「—」），需在主机侧补充采集才能获得。
+// 这类主机返回空串（调用方一般用 archOrDefault 回落到 defaultArch）。
 func archOf(kernel string) string {
 	k := strings.ToLower(strings.TrimSpace(kernel))
 	if k == "" {
@@ -425,6 +425,35 @@ func archOf(kernel string) string {
 		}
 	}
 	return ""
+}
+
+// defaultArch 架构无法判定时的兜底取值。
+//
+// 现实约束：全量 483 台里有约 273 台的内核串不含架构标记（Ubuntu 通用内核
+// `-generic` 对 x86 与 arm 同名、Windows 的 NT 版本串根本不含架构），n9e 侧也没有
+// 任何其他架构来源。而这些主机绝大多数是 x86 服务器，报告里留空「—」不如给一个
+// 明确的默认值——所以统一按 amd64（x86_64）计。
+//
+// 代价要说清：若集群里恰好有一台架构无法判定的 **arm** 主机，它会被记成 amd64。
+// 要消除这种误判，需在主机侧让 categraf 补采 `uname -m`（exec 插件写自定义指标）。
+const defaultArch = "amd64"
+
+// archOrDefault 从内核版本串解析架构，无法判定时回落到 defaultArch。
+func archOrDefault(kernel string) string {
+	if a := archOf(kernel); a != "" {
+		return a
+	}
+	return defaultArch
+}
+
+// orDefaultArch 架构值为空时回落到 defaultArch。
+// 用于完全没有 system_info 的主机（拿不到内核串，meta.Arch 里也没有它的条目），
+// 与 archOrDefault 保持同一口径，确保报告中该列恒有值。
+func orDefaultArch(arch string) string {
+	if strings.TrimSpace(arch) == "" {
+		return defaultArch
+	}
+	return arch
 }
 
 // hostMeta 主机元数据（全部取自 n9e 指标标签，缺失时为空映射，不阻断报告）。
@@ -470,9 +499,8 @@ func (c *N9EClient) fetchHostMeta(ts int64) hostMeta {
 			if ip := strings.TrimSpace(s.Metric["host_ip"]); ip != "" {
 				meta.IP[id] = ip
 			}
-			if a := archOf(s.Metric["kernel_version"]); a != "" {
-				meta.Arch[id] = a
-			}
+			// 内核串不含架构标记（Ubuntu -generic / Windows）时回落到 amd64
+			meta.Arch[id] = archOrDefault(s.Metric["kernel_version"])
 		}
 	}
 	// categraf 自身监控指标带 ident + version 标签，是 agent 版本号的唯一来源
@@ -662,7 +690,7 @@ type HostRow struct {
 	NetPeak    float64
 	SampleRate float64
 	OS         string
-	Arch       string // CPU 架构（由 system_info 的 kernel_version 解析；内核串不含架构时为空）
+	Arch       string // CPU 架构（system_info 的 kernel_version 解析；无法判定或无 system_info 时按 defaultArch 兜底，恒有值）
 	AgentVer   string // categraf agent 版本（categraf_info 的 version 标签，用于清单核对）
 	// 派生
 	Status string
@@ -1218,7 +1246,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 			NetPeak:    sliceMax(netV),
 			SampleRate: 1.0,
 			OS:         meta.OS[ident],
-			Arch:       meta.Arch[ident],
+			Arch:       orDefaultArch(meta.Arch[ident]),
 			AgentVer:   meta.Agent[ident],
 		}
 		_, hasConn := conn[ident]
