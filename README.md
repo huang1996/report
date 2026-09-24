@@ -77,6 +77,8 @@ docker compose run --rm report -list-ds
 | `N9E_PASS` | `-n9e_pass` | n9e 登录密码 | |
 | `N9E_PROJECT` | `-n9e_project` | 项目名关键字：ident 含该关键字的主机才纳入统计；未指定 `N9E_DS_ID` 时按它在全部数据源中检索 | |
 | `N9E_MAX_DS` | `-n9e_max_ds` | 自动检索数据源时的最大编号 | `90` |
+| `N9E_RETRY` | `-n9e_retry` | n9e 请求遇瞬时错误的重试**总次数**（含首次），`1`=不重试（详见下节） | `4` |
+| `N9E_RETRY_BACKOFF` | `-n9e_retry_backoff` | 首次退避秒数，之后按 2 倍递增（单次上限 30s） | `3` |
 | `REPORT_NAME` | `-report_name` | 自定义报告名称；留空则按单一业务系统自动生成「XX巡检周报」 | |
 | `REPORT_ENGINEER` | `-report_engineer` | 运维工程师，一处配置三处生效：① 覆盖各主机工程师 ② 报告信息表 ③ WebDAV 上传目录名（为空时上传到 `report/default/`） | |
 | `WAF_DATABASE_URL` | `-waf_database_url` | Safeline PostgreSQL 连接串；**留空则跳过 WAF 章节**（旧名 `DATABASE_URL` 兼容） | |
@@ -117,6 +119,28 @@ docker compose run --rm report -list-ds
 > **布尔参数的写法**：`-flag`、`-flag=true`、`-flag true` 三种都支持
 > （启动时会把 `-flag true` 这类写法统一归一化，避免标准库在 `true` 处提前终止参数解析、
 > 导致其后的参数被静默忽略）。无法识别的参数会以 `WARN` 级别明确提示。
+
+## n9e 请求重试（`-n9e_retry`）
+
+夜莺经网关访问偶发 502 / 响应头超时（日志形如
+`n9e 采集失败：n9e 查询失败: avg by (ident) (cpu_usage_active) -> HTTP 502: net/http: timeout awaiting response headers`），
+过一会儿重试即可成功。但采集是**单次失败即整段退出**的：一次瞬时抖动会让整份报告缺失
+资源巡检章节（只剩 WAF 与报告信息），因此程序对**瞬时错误**自动做指数退避重试。
+
+| 分类 | 具体情形 | 是否重试 |
+|---|---|---|
+| 瞬时 | HTTP 5xx（含 502/503/504）、429 限流、408 超时 | ✅ |
+| 瞬时 | 连接被重置 / 读写超时 / TLS 握手失败 | ✅ |
+| 瞬时 | HTTP 200 但正文不是 JSON（网关异常时返回错误页 / 首页 HTML） | ✅ |
+| 确定性 | 400 查询语法错误、401/403 鉴权、404 路由不存在 | ❌ 立即返回 |
+
+- **退避**：首次 `N9E_RETRY_BACKOFF` 秒，之后翻倍，单次上限 30s，并叠加 ±20% 抖动
+  （避免多个查询在同一时刻一起重试形成尖峰）。默认共尝试 4 次，退避约 3s → 6s → 12s。
+- **日志**：每次失败都记一条 WARN，含第几次 / 共几次 / 下次间隔，便于事后区分
+  「网关抖动、重试已救回」与「持续故障」；若最终仍失败，错误信息会标注已重试次数。
+- **调参**：`-n9e_retry 6 -n9e_retry_backoff 5` 可容忍更长的抖动窗口；
+  `-n9e_retry 1` 关闭重试（排查问题时用，失败能立刻看到原始错误）。
+- 登录接口（`/api/n9e/auth/login`）失败不重试——它以匿名方式继续访问代理接口，本身不是致命错误。
 
 ## 周期内无数据时的伪造数据（`-fake_when_empty`）
 
