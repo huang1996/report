@@ -352,6 +352,11 @@ func (c *N9EClient) QueryInstant(expr string, ts int64) ([]promSeries, error) {
 // 内核版本串形如 4.19.90-52.22.v2207.ky10.x86_64，ky10 即 V10）
 var kylinVerRe = regexp.MustCompile(`ky(?:lin)?v?(\d+)`)
 
+// windowsVendorRe 操作系统名前的厂商前缀（大小写与空格数均不固定）。
+// categraf 上报的 os_name 形如 Microsoft Windows Server 2016 Standard，
+// 报告中展示时去掉厂商前缀、直接从 Windows 开始（见 osDisplay）。
+var windowsVendorRe = regexp.MustCompile(`(?i)^microsoft\s+`)
+
 // osDisplay 由 system_info 标签组装可读的操作系统名称。
 // 麒麟系统的 categraf 不上报 os_version 标签，此时从 kernel_version 的 ky<N> 标记推导版本。
 func osDisplay(m map[string]string) string {
@@ -363,6 +368,10 @@ func osDisplay(m map[string]string) string {
 	if strings.EqualFold(strings.TrimSpace(name), "kylin") {
 		name = "Kylin"
 	}
+	// Windows 去掉厂商前缀「Microsoft 」，直接从 Windows 开始展示
+	// （Microsoft Windows Server 2016 Standard → Windows Server 2016 Standard）。
+	// name 已去首尾空白，而正则要求前缀后至少跟一个空白，故结果不会为空串。
+	name = windowsVendorRe.ReplaceAllString(name, "")
 	lower := strings.ToLower(name)
 	if strings.Contains(lower, "windows") || ver == "" || strings.Contains(ver, "build") {
 		if ver == "" {

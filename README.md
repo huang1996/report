@@ -298,6 +298,21 @@ n9e 侧不存在 `arch` / `os_arch` / `machine` / `uname` 等标签，categraf �
 > 不再落到默认值。当前实测全量 377 台有 `system_info` 的主机中约 210 台可解析出架构，
 > 其余按 `amd64` 计。
 
+### 操作系统（表 4）
+
+操作系统名取自 `system_info` 的 `os_name`；取不到时该列显示「—」（主机侧未启用 categraf 的
+`input.system` 插件，属数据缺口，非程序缺陷）。展示时做两处归一，避免同一类系统在报告中
+出现多种写法、影响分组统计：
+
+| 规则 | 处理前 | 处理后 |
+|---|---|---|
+| 去掉 Windows 的厂商前缀「Microsoft 」 | `Microsoft Windows Server 2016 Standard` | `Windows Server 2016 Standard` |
+| 麒麟版本号首字母大写归一 | `Kylin v10` / `Kylin V10` | `Kylin V10` |
+
+前缀匹配不区分大小写、容忍多个空格，且只匹配「Microsoft + 空白」，形近的名称不会被误伤。
+另有两类系统**不拼接版本号**：Windows（`os_version` 是 NT 版本号，如 `10.0.14393 Build 14393`，
+对运维无参考价值）与麒麟（`categraf` 不上报 `os_version`，改从内核串的 `ky<N>` 标记推导大版本）。
+
 ## 全部主机清单导出（核对用）
 
 `cmd/report/n9e_allhosts_export_test.go` 会遍历全部数据源、按与报告完全相同的采集与 ident 解析逻辑

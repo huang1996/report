@@ -34,10 +34,30 @@ func TestOSDisplay(t *testing.T) {
 			want: "ubuntu 22.04", // 数字开头，不做改动
 		},
 		{
-			name: "Windows 只返回名称（版本号含 build 时丢弃）",
+			name: "Windows 去掉厂商前缀并丢弃含 build 的版本号",
 			m: map[string]string{"os_name": "Microsoft Windows Server 2012 R2 Datacenter",
 				"os_version": "6.3.9600 build 9600"},
-			want: "Microsoft Windows Server 2012 R2 Datacenter",
+			want: "Windows Server 2012 R2 Datacenter",
+		},
+		{
+			name: "Windows 前缀大小写不敏感",
+			m:    map[string]string{"os_name": "microsoft Windows Server 2016 Standard"},
+			want: "Windows Server 2016 Standard",
+		},
+		{
+			name: "Windows 前缀后多个空格也剥离干净",
+			m:    map[string]string{"os_name": "  Microsoft   Windows Server 2019  "},
+			want: "Windows Server 2019",
+		},
+		{
+			name: "Windows 无 os_version 时同样剥离前缀",
+			m:    map[string]string{"os_name": "Microsoft Windows 10 Pro", "os_version": "10.0.19045"},
+			want: "Windows 10 Pro",
+		},
+		{
+			name: "形近前缀不误剥离（Microsoft-adjacent 不是厂商前缀）",
+			m:    map[string]string{"os_name": "Microsoft-adjacent Linux", "os_version": "1.0"},
+			want: "Microsoft-adjacent Linux 1.0",
 		},
 		{
 			name: "os_name 为空返回空串（缺 system_info 的主机）",
@@ -56,6 +76,31 @@ func TestOSDisplay(t *testing.T) {
 				t.Errorf("osDisplay(%v) = %q，期望 %q", c.m, got, c.want)
 			}
 		})
+	}
+}
+
+// TestOSDisplayWindowsVendorPrefix 单独锁定厂商前缀剥离：categraf 上报的 os_name
+// 形如 Microsoft Windows Server 2016 Standard，展示时应从 Windows 开始。
+// 前缀的大小写与空格数不固定，且必须只精确匹配「Microsoft + 空白」——
+// 形近的发行版名（如 MicrosoftLinux）不能被误伤。
+func TestOSDisplayWindowsVendorPrefix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Microsoft Windows Server 2016 Standard", "Windows Server 2016 Standard"},
+		{"Microsoft Windows Server 2012 R2 Datacenter", "Windows Server 2012 R2 Datacenter"},
+		{"microsoft Windows Server 2016 Standard", "Windows Server 2016 Standard"},
+		{"MICROSOFT WINDOWS SERVER 2019", "WINDOWS SERVER 2019"},
+		{"Microsoft   Windows Server 2022 Datacenter", "Windows Server 2022 Datacenter"},
+		// 无紧跟空白 → 不剥离（TrimSpace 后已无尾空格，正则不匹配）
+		{"Microsoft", "Microsoft 1"},
+		// 形近但非厂商前缀 → 不剥离
+		{"MicrosoftLinux", "MicrosoftLinux 1"},
+		{"Microsoft-adjacent OS", "Microsoft-adjacent OS 1"},
+	}
+	for _, c := range cases {
+		got := osDisplay(map[string]string{"os_name": c.in, "os_version": "1"})
+		if got != c.want {
+			t.Errorf("osDisplay(os_name=%q) = %q，期望 %q", c.in, got, c.want)
+		}
 	}
 }
 
