@@ -273,20 +273,46 @@ func maskURL(u string) string {
 	return u
 }
 
-// newN9EClient 按配置创建 n9e 客户端，并应用重试参数（-n9e_retry / N9E_RETRY 等）。
+// newN9EClient 按配置创建 n9e 客户端，并应用接入模式与重试参数（-tsdb_mode / -n9e_retry 等）。
 // 夜莺经网关访问偶发 502 / 超时，重试能避免整份报告缺失资源巡检数据。
 func newN9EClient(cfg *Config, ds string, timeout time.Duration) *N9EClient {
 	cli := NewN9EClient(cfg.Base, ds, cfg.Token, cfg.User, cfg.Pass, timeout, cfg.Insecure)
+	cli.SetMode(cfg.TSDBMode)
+	cli.SetHostLabel(cfg.HostLabel)
 	cli.SetRetry(cfg.RetryAttempts, time.Duration(cfg.RetryBackoff)*time.Second)
 	return cli
 }
 
+// tsdbIsVM 是否为直连 VictoriaMetrics 的模式（单机 / 集群）
+func tsdbIsVM(cfg *Config) bool {
+	m := strings.ToLower(strings.TrimSpace(cfg.TSDBMode))
+	return m == TSDBModeVM || m == TSDBModeVMCluster
+}
+
+// dataSourceDesc 报告正文里展示的数据来源描述
+func dataSourceDesc(cfg *Config, ds string) string {
+	if tsdbIsVM(cfg) {
+		return fmt.Sprintf("VictoriaMetrics（%s）", cfg.Base)
+	}
+	return fmt.Sprintf("夜莺监控 n9e（%s，数据源 #%s）", cfg.Base, ds)
+}
+
 func runListDS(cfg *Config) {
-	cli := newN9EClient(cfg, "1", 60*time.Second)
+	cli := newN9EClient(cfg, cfg.DS, 60*time.Second)
 	cli.login()
 	dss, err := cli.ListDatasources()
 	if err != nil {
 		log.Errorf("获取数据源清单失败：%v", err)
+		return
+	}
+	if tsdbIsVM(cfg) {
+		// 顺便探测主机标识标签：现场排障时最常问的两件事就是「地址通不通」与
+		// 「程序按哪个标签取主机」，这里一次性给出来。
+		cli.resolveHostLabel(cli.ds)
+		fmt.Printf("VictoriaMetrics 模式（tsdb_mode=%s）没有「多个数据源」的概念，整个库就是一个数据源：\n", cfg.TSDBMode)
+		fmt.Printf("  地址：%s\n", cfg.Base)
+		fmt.Printf("  主机标识标签：%s\n", cli.HostLabel())
+		fmt.Println("\n提示：主机筛选请用 -n9e_project <关键字>，它会按主机标识关键字过滤；VictoriaMetrics 模式下无需 -n9e_ds_id。")
 		return
 	}
 	fmt.Printf("n9e 数据源清单（%s，共 %d 个，按数据源ID排序）：\n", cfg.Base, len(dss))
@@ -420,10 +446,19 @@ func runOnce(cfg *Config, ws, we time.Time) {
 		rows = demoRows()
 		srcDesc = "演示样例数据"
 	} else if cfg.Base == "" {
-		log.Warnf("未配置 n9e 地址（N9E_BASE / -n9e_base），本次报告将不含资源巡检数据。")
+		if tsdbIsVM(cfg) {
+			log.Warnf("未配置时序库地址（N9E_BASE / -n9e_base），本次报告将不含资源巡检数据。")
+		} else {
+			log.Warnf("未配置 n9e 地址（N9E_BASE / -n9e_base），本次报告将不含资源巡检数据。")
+		}
 	} else {
 		ds := cfg.DS
-		if cfg.DS == "1" && cfg.Project != "" && os.Getenv("N9E_DS_ID") == "" {
+		if tsdbIsVM(cfg) {
+			// 直连 VictoriaMetrics 没有多数据源概念：整库即一个数据源，
+			// 项目过滤由 -n9e_project 按 ident 关键字在查询结果中完成。
+			log.Debugf("VictoriaMetrics 模式（%s）：跳过数据源检索，项目过滤按主机标识关键字「%s」进行。",
+				cfg.TSDBMode, cfg.Project)
+		} else if cfg.DS == "1" && cfg.Project != "" && os.Getenv("N9E_DS_ID") == "" {
 			// 未明确指定数据源 → 按项目名检索
 			cli := newN9EClient(cfg, "1", 60*time.Second)
 			if id, err := ResolveDSByProject(cfg.Project, cli, cfg.MaxDS); err == nil {
@@ -435,10 +470,10 @@ func runOnce(cfg *Config, ws, we time.Time) {
 		cli := newN9EClient(cfg, ds, 180*time.Second)
 		res, err := ReadN9E(cli, ws.Unix(), we.Unix(), cfg.Step, identOpts(cfg))
 		if err != nil {
-			log.Errorf("n9e 采集失败：%v", err)
+			log.Errorf("%s 采集失败：%v", cli.label(), err)
 		} else {
 			rows = res
-			srcDesc = fmt.Sprintf("夜莺监控 n9e（%s，数据源 #%s）", cfg.Base, ds)
+			srcDesc = dataSourceDesc(cfg, ds)
 		}
 		// 周期内无数据（采集失败 / 无主机 / 指标全零）时，按该数据源最新数据伪造（-fake_when_empty）
 		if cfg.FakeWhenEmpty && !n9eHasData(rows) {
@@ -447,10 +482,10 @@ func runOnce(cfg *Config, ws, we time.Time) {
 				log.Errorf("周期内无数据，伪造数据失败：%v", ferr)
 			} else {
 				rows = faked
-				srcDesc = fmt.Sprintf("夜莺监控 n9e（%s，数据源 #%s）", cfg.Base, ds)
-				log.Warnf("本周期（%s ~ %s）n9e 无可用数据，已按数据源 #%s 的最新数据随机增减伪造 %d 台主机指标。"+
+				srcDesc = dataSourceDesc(cfg, ds)
+				log.Warnf("本周期（%s ~ %s）%s 无可用数据，已按数据源 #%s 的最新数据随机增减伪造 %d 台主机指标。"+
 					"注意：资源巡检章节的数值为伪造值，不可用于真实结论；WAF 章节不受影响。",
-					ws.Format("2006-01-02"), we.Format("2006-01-02"), ds, len(faked))
+					ws.Format("2006-01-02"), we.Format("2006-01-02"), cli.label(), ds, len(faked))
 			}
 		}
 	}

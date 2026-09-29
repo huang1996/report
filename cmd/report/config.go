@@ -14,6 +14,8 @@ type Config struct {
 	// n9e 连接
 	Base, DS, Token, User, Pass string
 	DSExplicit                  bool   // N9E_DS_ID 是否被显式指定（env 或参数）
+	TSDBMode                    string // 时序库接入模式：n9e（默认）/ vm / vmcluster，见 n9e.go 的 TSDBMode*
+	HostLabel                   string // 主机标识标签名：auto（默认，VM 模式下自动回退 agent_hostname）/ ident / agent_hostname
 	Project                     string // 项目名关键字（ident 过滤 / 自动检索数据源）
 	MaxDS                       int
 	RetryAttempts               int    // n9e 请求瞬时错误的重试总次数（含首次），1=不重试
@@ -171,6 +173,8 @@ func parseConfig() *Config {
 	// 先取环境变量默认值
 	c.Base = env("N9E_BASE", "")
 	c.DS = env("N9E_DS_ID", "")
+	c.TSDBMode = env("TSDB_MODE", TSDBModeN9E)
+	c.HostLabel = env("N9E_HOST_LABEL", HostLabelAuto)
 	c.Token = env("N9E_TOKEN", "")
 	c.User = env("N9E_USER", "")
 	c.Pass = env("N9E_PASS", "")
@@ -198,8 +202,12 @@ func parseConfig() *Config {
 	// 命令行参数覆盖（compose 中通过 command 配置）
 	// 双通道配置项：env 用大写、参数用同名小写（含前缀），参数显式传入时以参数为准
 	f := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	f.StringVar(&c.Base, "n9e_base", c.Base, "n9e 地址")
-	f.StringVar(&c.DS, "n9e_ds_id", c.DS, "数据源ID（一个数据源≈一个项目）")
+	f.StringVar(&c.Base, "n9e_base", c.Base, "n9e 地址（mode=vm/vmcluster 时为 VictoriaMetrics 地址）")
+	f.StringVar(&c.DS, "n9e_ds_id", c.DS, "数据源ID（一个数据源≈一个项目）；vmcluster 模式下为租户 accountID")
+	f.StringVar(&c.TSDBMode, "tsdb_mode", c.TSDBMode,
+		"时序库接入模式：n9e=经夜莺代理（默认）/ vm=直连 VictoriaMetrics 单机 / vmcluster=直连 vmselect 集群")
+	f.StringVar(&c.HostLabel, "n9e_host_label", c.HostLabel,
+		"主机标识标签名：auto=自动（默认，直连时序库且无 ident 时回退 agent_hostname）/ ident / agent_hostname / 其他标签名")
 	f.StringVar(&c.Token, "n9e_token", c.Token, "个人令牌（可选）")
 	f.StringVar(&c.User, "n9e_user", c.User, "登录账号（可选）")
 	f.StringVar(&c.Pass, "n9e_pass", c.Pass, "登录密码（可选）")
@@ -283,6 +291,11 @@ func parseConfig() *Config {
 	c.DSExplicit = os.Getenv("N9E_DS_ID") != ""
 	if changed["n9e_ds_id"] {
 		c.DSExplicit = true
+	}
+	// VictoriaMetrics 集群版的租户号（accountID）默认是 0，与 n9e 数据源编号
+	// 从 1 开始的习惯不同；未显式指定时按 0 处理，避免拼出 /select/1/ 查不到数据。
+	if !c.DSExplicit && strings.EqualFold(strings.TrimSpace(c.TSDBMode), TSDBModeVMCluster) {
+		c.DS = "0"
 	}
 	return c
 }

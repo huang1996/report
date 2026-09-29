@@ -4,6 +4,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -131,6 +132,34 @@ var n9eQueries = map[string]string{
 	"conn_alt":   "sockstat_tcp_inuse",
 }
 
+// TSDB 接入模式（-tsdb_mode / TSDB_MODE）。
+//
+// 默认走夜莺（n9e）代理接口，此时 base 是 n9e 地址、ds 是 n9e 数据源编号。
+// 对于**不具备连接中心服务器条件**的隔离机房，可以只部署 categraf + VictoriaMetrics：
+// categraf 把指标 remote write 到时序库（不经过 n9e），报告程序直连时序库查询。
+// 三种模式只用标准 Prometheus 兼容查询接口，差别仅在 URL 前缀与认证方式。
+const (
+	TSDBModeN9E       = "n9e"       // 夜莺代理：{base}/api/n9e/proxy/{ds}/api/v1{path}
+	TSDBModeVM        = "vm"        // VictoriaMetrics 单机：{base}/api/v1{path}
+	TSDBModeVMCluster = "vmcluster" // vmselect 集群：{base}/select/{ds}/prometheus/api/v1{path}
+)
+
+// 主机标识所用的标签名（-n9e_host_label / N9E_HOST_LABEL，默认 auto）。
+//
+// n9e 链路上 ident 是 pushgw 把 categraf 的 agent_hostname **就地改名**后注入的
+// （pushgw/router/router_remotewrite.go 的 extractIdentFromTimeSeries：只改标签名、
+// 不动标签值）；直连 VictoriaMetrics 时没有这层改写，若 categraf 未显式配置
+// [global.labels] ident，序列上就只剩 agent_hostname（其值 = categraf 的
+// [global] hostname，与 n9e 环境的 ident 逐字节一致）。
+//
+// 因此 VM 模式下默认自动探测：ident 优先，缺失则回退 agent_hostname。
+// 这样「categraf 什么都不配」的隔离机房也能直接出报告，不再强制加一行 global label。
+const (
+	HostLabelAuto          = "auto"           // 默认：VM 模式下自动探测，n9e 模式恒用 ident
+	HostLabelIdent         = "ident"          // 夜莺链路的主机标识标签
+	HostLabelAgentHostname = "agent_hostname" // categraf 默认写入的主机标签
+)
+
 type N9EClient struct {
 	base     string
 	ds       string
@@ -140,6 +169,13 @@ type N9EClient struct {
 	timeout  time.Duration
 	http     *http.Client
 	hdr      map[string]string
+	mode     string // TSDB 接入模式，见 TSDBMode* 常量
+
+	// 主机标识标签名。hostLabelAuto 为 true 表示尚未探测（仅 VM 模式会探测，见 resolveHostLabel）；
+	// hostLabelFixed 表示标签名由使用者显式指定（-n9e_host_label），只影响报错时的提示措辞。
+	hostLabel      string
+	hostLabelAuto  bool
+	hostLabelFixed bool
 
 	// 瞬时错误重试（默认 defaultRetryAttempts / defaultRetryBase，可用 -n9e_retry 等覆盖）
 	retryAttempts int
@@ -160,9 +196,129 @@ func NewN9EClient(base, ds, token, user, password string, timeout time.Duration,
 		timeout:       timeout,
 		http:          &http.Client{Timeout: timeout, Transport: tr},
 		hdr:           map[string]string{},
+		mode:          TSDBModeN9E,
+		hostLabel:     HostLabelIdent,
+		hostLabelAuto: true,
 		retryAttempts: defaultRetryAttempts,
 		retryBase:     defaultRetryBase,
 	}
+}
+
+// SetMode 设置 TSDB 接入模式（空值或未知值一律按 n9e 处理，保证旧配置行为不变）。
+func (c *N9EClient) SetMode(mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case TSDBModeVM:
+		c.mode = TSDBModeVM
+	case TSDBModeVMCluster:
+		c.mode = TSDBModeVMCluster
+	default:
+		c.mode = TSDBModeN9E
+	}
+}
+
+// isVM 是否为直连 VictoriaMetrics 的模式（单机或集群）
+func (c *N9EClient) isVM() bool {
+	return c.mode == TSDBModeVM || c.mode == TSDBModeVMCluster
+}
+
+// Mode 返回当前生效的模式（未设置时视为 n9e）
+func (c *N9EClient) Mode() string {
+	if c.mode == "" {
+		return TSDBModeN9E
+	}
+	return c.mode
+}
+
+// label 返回日志与错误提示里使用的数据源名称
+func (c *N9EClient) label() string {
+	if c.isVM() {
+		return "VictoriaMetrics"
+	}
+	return "n9e"
+}
+
+// SetHostLabel 设置主机标识所用的标签名（-n9e_host_label / N9E_HOST_LABEL）：
+//
+//	"" / "auto"（默认）—— VM 模式下自动探测：ident 优先，库中没有 ident 时回退 agent_hostname；
+//	"ident"            —— 固定用 ident；
+//	其他非空值          —— 固定用该标签名（如 agent_hostname）。
+//
+// 显式指定后不再探测，适用于「库里两种标签并存但要用后者」等特殊场景。
+func (c *N9EClient) SetHostLabel(v string) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", HostLabelAuto:
+		c.hostLabel, c.hostLabelAuto, c.hostLabelFixed = HostLabelIdent, true, false
+	default:
+		c.hostLabel, c.hostLabelAuto, c.hostLabelFixed = strings.TrimSpace(v), false, true
+	}
+}
+
+// HostLabel 返回当前生效的主机标识标签名（未探测 / 零值客户端一律按 ident）
+func (c *N9EClient) HostLabel() string {
+	if c.hostLabel == "" {
+		return HostLabelIdent
+	}
+	return c.hostLabel
+}
+
+// labelValues 查询某标签的全部取值（Prometheus 兼容接口 /label/<name>/values）。
+// 标签不存在时返回空切片而非错误（与 Prometheus / VictoriaMetrics 行为一致）。
+func (c *N9EClient) labelValues(name, ds string) ([]string, error) {
+	var j struct {
+		Data []string `json:"data"`
+	}
+	if err := c.getJSON(c.api("/label/"+url.PathEscape(name)+"/values", ds), &j); err != nil {
+		return nil, err
+	}
+	return j.Data, nil
+}
+
+// resolveHostLabel 直连时序库时探测主机标识标签：ident 优先，缺失则回退 agent_hostname。
+//
+// 为什么要回退：ident 只在经夜莺转发时由 pushgw 注入，隔离机房是 categraf 直写
+// VictoriaMetrics，链路上没有这层改写；而 agent_hostname 是 categraf 默认就会写入的，
+// 其值等于 categraf 的 [global] hostname——也就是 n9e 环境里 ident 的原始值。
+// 自动回退后，这类环境无需任何 categraf 改动即可生成报告。
+//
+// 探测失败（网络 / 接口不支持）时保留 ident 不动，宁可走原有的「未找到 ident」诊断，
+// 也不误切到 agent_hostname 得出一份空报告。无论结果如何都只探测一次。
+func (c *N9EClient) resolveHostLabel(ds string) {
+	if !c.isVM() || !c.hostLabelAuto {
+		return
+	}
+	c.hostLabelAuto = false
+
+	ids, err := c.labelValues(HostLabelIdent, ds)
+	if err != nil {
+		log.Debugf("探测 %s 标签失败（%v），仍按 ident 查询。", HostLabelIdent, err)
+		return
+	}
+	if len(ids) > 0 {
+		return // ident 可用，保持默认
+	}
+	hosts, err := c.labelValues(HostLabelAgentHostname, ds)
+	if err != nil {
+		log.Debugf("探测 %s 标签失败（%v），仍按 ident 查询。", HostLabelAgentHostname, err)
+		return
+	}
+	if len(hosts) == 0 {
+		return // 两种标签都没有，保持 ident，由 ReadN9E 的诊断分支给出 categraf 配置指引
+	}
+	c.hostLabel = HostLabelAgentHostname
+	log.Warnf("时序库中没有 ident 标签，已自动改用 agent_hostname 作为主机标识（%d 台主机）。"+
+		"ident 由夜莺 pushgw 把 categraf 的 agent_hostname 改名而来，直连时序库时没有这层改写；"+
+		"agent_hostname 的取值等于 categraf 的 [global] hostname，与 n9e 环境的 ident 相同。"+
+		"若报告中项目 / 角色解析不正确，请在 categraf 的 [global.labels] 中显式配置 ident。", len(hosts))
+}
+
+// queryOf 返回查询表达式，并把其中的主机标识标签名替换为当前生效值。
+// 表达式里 ident 只作为标签名出现（by (ident) / sum by (ident)），整体替换是安全的。
+func queryOf(key, hostLabel string) string {
+	expr := n9eQueries[key]
+	if hostLabel == "" || hostLabel == HostLabelIdent {
+		return expr
+	}
+	return strings.ReplaceAll(expr, HostLabelIdent, hostLabel)
 }
 
 // SetRetry 设置瞬时错误的请求重试：attempts 为总尝试次数（含首次，<1 视为 1 = 不重试），
@@ -192,6 +348,16 @@ func (c *N9EClient) retryCfg() (int, time.Duration) {
 func (c *N9EClient) login() {
 	if c.token != "" {
 		c.hdr["Authorization"] = "Bearer " + c.token
+		return
+	}
+	// VictoriaMetrics 没有 /api/n9e/auth/login 接口。直连时序库时若配了账号密码，
+	// 按 Basic Auth 处理（对应前置 vmauth 做鉴权的部署方式）；未配则不携带认证头
+	// （单机 VictoriaMetrics 默认无鉴权）。
+	if c.isVM() {
+		if c.user != "" && c.password != "" {
+			c.hdr["Authorization"] = "Basic " +
+				base64.StdEncoding.EncodeToString([]byte(c.user+":"+c.password))
+		}
 		return
 	}
 	if c.user == "" || c.password == "" {
@@ -227,6 +393,14 @@ type DataSource struct {
 }
 
 func (c *N9EClient) ListDatasources() ([]DataSource, error) {
+	// 单机版 VictoriaMetrics 没有「数据源」概念，整库就是一个数据源
+	if c.mode == TSDBModeVM {
+		return []DataSource{{ID: 0, Name: c.base, Type: "victoriametrics"}}, nil
+	}
+	// 集群版的租户号（accountID）无法枚举，只能由使用者指定
+	if c.mode == TSDBModeVMCluster {
+		return nil, fmt.Errorf("VictoriaMetrics 集群模式无法枚举租户，请用 -n9e_ds_id 直接指定 accountID（单租户通常为 0）")
+	}
 	var j struct {
 		Dat []struct {
 			ID         interface{} `json:"id"`
@@ -312,18 +486,26 @@ func (c *N9EClient) getJSONOnce(u string, out interface{}) (error, bool) {
 	return nil, false
 }
 
+// api 拼接查询接口地址。三种模式的路径前缀不同，其余（/query、/query_range、
+// /label/<name>/values 等）都是同一套 Prometheus 兼容接口，参数与响应结构一致。
 func (c *N9EClient) api(path string, ds string) string {
-	return fmt.Sprintf("%s/api/n9e/proxy/%s/api/v1%s", c.base, ds, path)
+	switch c.mode {
+	case TSDBModeVM:
+		// 单机版：ds 不参与路径（整个库就是一个数据源）
+		return c.base + "/api/v1" + path
+	case TSDBModeVMCluster:
+		// 集群版 vmselect：ds 即租户号 accountID
+		if ds == "" {
+			ds = "0"
+		}
+		return fmt.Sprintf("%s/select/%s/prometheus/api/v1%s", c.base, ds, path)
+	default:
+		return fmt.Sprintf("%s/api/n9e/proxy/%s/api/v1%s", c.base, ds, path)
+	}
 }
 
 func (c *N9EClient) Idents(ds string) ([]string, error) {
-	var j struct {
-		Data []string `json:"data"`
-	}
-	if err := c.getJSON(c.api("/label/ident/values", ds), &j); err != nil {
-		return nil, err
-	}
-	return j.Data, nil
+	return c.labelValues(c.HostLabel(), ds)
 }
 
 type promSeries struct {
@@ -340,10 +522,10 @@ func (c *N9EClient) QueryInstant(expr string, ts int64) ([]promSeries, error) {
 		} `json:"data"`
 	}
 	if err := c.getJSON(u, &j); err != nil {
-		return nil, fmt.Errorf("n9e 查询失败: %s -> %v", expr, err)
+		return nil, fmt.Errorf("%s 查询失败: %s -> %v", c.label(), expr, err)
 	}
 	if j.Status != "success" {
-		return nil, fmt.Errorf("n9e 查询失败：%s", expr)
+		return nil, fmt.Errorf("%s 查询失败：%s", c.label(), expr)
 	}
 	return j.Data.Result, nil
 }
@@ -479,7 +661,9 @@ type hostMeta struct {
 // fetchHostMeta 拉取各主机元数据：操作系统、真实 IP、CPU 架构、categraf 版本。
 // ip 用于补齐 ident 里不含 IP 的数据源（如「租户-项目-角色」形态的 ident，
 // 真实 IP 只存在于 system_info 的 host_ip 标签）。
+// 主机键取当前生效的主机标识标签（ident，或在直连时序库且缺 ident 时回退的 agent_hostname）。
 func (c *N9EClient) fetchHostMeta(ts int64) hostMeta {
+	hl := c.HostLabel()
 	meta := hostMeta{
 		OS:    map[string]string{},
 		IP:    map[string]string{},
@@ -497,7 +681,7 @@ func (c *N9EClient) fetchHostMeta(ts int64) hostMeta {
 		log.Debugf("system_info 查询失败（%v），表 3 操作系统 / CPU 架构列将留空。", err)
 	} else {
 		for _, s := range res {
-			id := s.Metric["ident"]
+			id := s.Metric[hl]
 			if id == "" {
 				continue
 			}
@@ -512,13 +696,13 @@ func (c *N9EClient) fetchHostMeta(ts int64) hostMeta {
 			meta.Arch[id] = archOrDefault(s.Metric["kernel_version"])
 		}
 	}
-	// categraf 自身监控指标带 ident + version 标签，是 agent 版本号的唯一来源
+	// categraf 自身监控指标带主机标识 + version 标签，是 agent 版本号的唯一来源
 	// （v0.4.36-<commit sha> 形态）。查询失败只影响该列，不影响主流程。
 	if res, err := c.QueryInstant("categraf_info", ts); err != nil {
 		log.Debugf("categraf_info 查询失败（%v），agent 版本将留空。", err)
 	} else {
 		for _, s := range res {
-			id := s.Metric["ident"]
+			id := s.Metric[hl]
 			v := strings.TrimSpace(s.Metric["version"])
 			if id != "" && v != "" {
 				meta.Agent[id] = v
@@ -538,10 +722,10 @@ func (c *N9EClient) QueryRange(expr string, start, end int64, step int) ([]promS
 		} `json:"data"`
 	}
 	if err := c.getJSON(u, &j); err != nil {
-		return nil, fmt.Errorf("n9e 查询失败: %s -> %v", expr, err)
+		return nil, fmt.Errorf("%s 查询失败: %s -> %v", c.label(), expr, err)
 	}
 	if j.Status != "success" {
-		return nil, fmt.Errorf("n9e 查询失败：%s", expr)
+		return nil, fmt.Errorf("%s 查询失败：%s", c.label(), expr)
 	}
 	return j.Data.Result, nil
 }
@@ -1038,37 +1222,50 @@ func weightedDisk(reps map[string]float64, seq map[string][][2]float64) []float6
 	return out
 }
 
-// ReadN9E 从 n9e 采集 [start,end] 窗口内各主机指标；opts.Filter 非空时按 ident 关键字过滤
+// ReadN9E 从 n9e / 时序库采集 [start,end] 窗口内各主机指标；opts.Filter 非空时按主机标识关键字过滤
 func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRow, error) {
 	c.login()
+	// 直连时序库时先确定主机标识标签：ident 缺失则回退 agent_hostname（见 resolveHostLabel）
+	c.resolveHostLabel(c.ds)
+	hl := c.HostLabel()
 	identFilter, layout := opts.Filter, opts.Layout
-	log.Infof("正在从 n9e 拉取数据：%s（数据源 #%s，%s ~ %s，步长 %ds）",
-		c.base, c.ds,
-		time.Unix(start, 0).Format("2006-01-02 15:04"),
-		time.Unix(end, 0).Format("2006-01-02 15:04"), step)
+	if c.isVM() {
+		log.Infof("正在从 VictoriaMetrics 拉取数据：%s（模式 %s，主机标识 %s，%s ~ %s，步长 %ds）",
+			c.base, c.Mode(), hl,
+			time.Unix(start, 0).Format("2006-01-02 15:04"),
+			time.Unix(end, 0).Format("2006-01-02 15:04"), step)
+	} else {
+		log.Infof("正在从 n9e 拉取数据：%s（数据源 #%s，%s ~ %s，步长 %ds）",
+			c.base, c.ds,
+			time.Unix(start, 0).Format("2006-01-02 15:04"),
+			time.Unix(end, 0).Format("2006-01-02 15:04"), step)
+	}
 
 	data := map[string][]promSeries{}
 	for _, key := range []string{"cores", "cpu", "mem_pct", "mem_total", "disk_pct", "disk_total", "diskio", "net", "conn"} {
-		res, err := c.QueryRange(n9eQueries[key], start, end, step)
+		res, err := c.QueryRange(queryOf(key, hl), start, end, step)
 		if err != nil {
 			return nil, err
 		}
 		data[key] = res
 	}
 	if len(data["conn"]) == 0 {
-		res, err := c.QueryRange(n9eQueries["conn_alt"], start, end, step)
+		res, err := c.QueryRange(queryOf("conn_alt", hl), start, end, step)
 		if err == nil {
 			data["conn"] = res
 		}
 	}
 	if len(data["cores"]) == 0 {
-		return nil, fmt.Errorf("n9e 未返回任何主机数据（表达式：%s），请检查数据源ID与时间范围。", n9eQueries["cores"])
+		if c.isVM() {
+			return nil, fmt.Errorf("VictoriaMetrics 未返回任何主机数据（表达式：%s），请检查时序库地址与时间范围。", queryOf("cores", hl))
+		}
+		return nil, fmt.Errorf("n9e 未返回任何主机数据（表达式：%s），请检查数据源ID与时间范围。", queryOf("cores", hl))
 	}
 
 	meta := c.fetchHostMeta(end)
 
 	keep := func(m map[string]string) bool {
-		id := m["ident"]
+		id := m[hl]
 		return identFilter == "" || strings.Contains(id, identFilter)
 	}
 
@@ -1083,7 +1280,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 	dtot := map[string]map[string]diskVol{}      // ident -> path -> 容量元信息
 
 	for _, s := range data["cores"] {
-		if id := s.Metric["ident"]; id != "" && keep(s.Metric) {
+		if id := s.Metric[hl]; id != "" && keep(s.Metric) {
 			if v, ok := lastVal(s); ok {
 				cores[id] = v
 			}
@@ -1091,31 +1288,31 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 	}
 	for _, s := range data["cpu"] {
 		if keep(s.Metric) {
-			cpu[s.Metric["ident"]] = vals(s)
+			cpu[s.Metric[hl]] = vals(s)
 		}
 	}
 	for _, s := range data["mem_pct"] {
 		if keep(s.Metric) {
-			memP[s.Metric["ident"]] = vals(s)
+			memP[s.Metric[hl]] = vals(s)
 		}
 	}
 	for _, s := range data["mem_total"] {
 		if keep(s.Metric) {
 			if v, ok := lastVal(s); ok {
-				memT[s.Metric["ident"]] = v
+				memT[s.Metric[hl]] = v
 			}
 		}
 	}
 	for _, s := range data["net"] {
 		if keep(s.Metric) {
-			net[s.Metric["ident"]] = vals(s)
+			net[s.Metric[hl]] = vals(s)
 		}
 	}
 	for _, s := range data["diskio"] {
 		if !keep(s.Metric) {
 			continue
 		}
-		id := s.Metric["ident"]
+		id := s.Metric[hl]
 		vs := vals(s)
 		pairs := make([][2]float64, 0, len(s.Values))
 		for i, p := range s.Values {
@@ -1127,14 +1324,14 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 	}
 	for _, s := range data["conn"] {
 		if keep(s.Metric) {
-			conn[s.Metric["ident"]] = vals(s)
+			conn[s.Metric[hl]] = vals(s)
 		}
 	}
 	for _, s := range data["disk_pct"] {
 		if !keep(s.Metric) {
 			continue
 		}
-		id := s.Metric["ident"]
+		id := s.Metric[hl]
 		path := s.Metric["path"]
 		if path == "" {
 			path = s.Metric["device"]
@@ -1156,7 +1353,7 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 		if !keep(s.Metric) {
 			continue
 		}
-		id := s.Metric["ident"]
+		id := s.Metric[hl]
 		path := s.Metric["path"]
 		if path == "" {
 			path = s.Metric["device"]
@@ -1178,19 +1375,41 @@ func ReadN9E(c *N9EClient, start, end int64, step int, opts IdentOpts) ([]HostRo
 		var appear []string
 		seen := map[string]bool{}
 		for _, s := range data["cores"] {
-			if id := s.Metric["ident"]; id != "" && !seen[id] {
+			if id := s.Metric[hl]; id != "" && !seen[id] {
 				seen[id] = true
 				appear = append(appear, id)
 			}
 		}
-		return nil, fmt.Errorf("数据源 #%s 中未找到含「%s」的主机。该数据源现有主机：\n  %s",
-			c.ds, identFilter, strings.Join(appear, "\n  "))
+		where := fmt.Sprintf("数据源 #%s", c.ds)
+		if c.isVM() {
+			where = "VictoriaMetrics 时序库"
+		}
+		return nil, fmt.Errorf("%s 中未找到含「%s」的主机。现有主机：\n  %s",
+			where, identFilter, strings.Join(appear, "\n  "))
 	}
 
 	GB := float64(1 << 30)
 	idents := make([]string, 0, len(cores))
 	for id := range cores {
 		idents = append(idents, id)
+	}
+	// 直连时序库时序列上**不一定**有 ident 标签：ident 是夜莺 pushgw 把 categraf 的
+	// agent_hostname 就地改名后注入的。程序已先尝试自动回退到 agent_hostname
+	// （见 resolveHostLabel）；走到这里说明当前生效的标签在序列上一个值都没有，
+	// 按「自动 / 显式指定」两种成因分别给出可操作的提示，而不是产出一份空报告。
+	if c.isVM() && len(idents) == 0 && len(data["cores"]) > 0 {
+		hint := "categraf 默认会写入 agent_hostname，缺失说明采集端做过裁剪（如 omit_hostname = true）；" +
+			"请在每台主机的 conf/config.toml 中显式配置主机标识：\n" +
+			"  [global.labels]\n  ident = \"<租户ID>-<IP>-<项目名>-<角色>\"\n" +
+			"（ident 是报告解析项目/角色/IP 的唯一依据，需按现有命名约定填写）"
+		if c.hostLabelFixed {
+			// 显式指定了标签名：库里很可能是另一种标签，改用默认的自动探测即可
+			hint = fmt.Sprintf("主机标识标签被显式指定为 %s（-n9e_host_label），但序列上没有这个标签；"+
+				"categraf 直写时序库时通常只有它默认写入的 agent_hostname，"+
+				"去掉 -n9e_host_label 交给自动探测（或改为 -n9e_host_label=agent_hostname）即可。", hl)
+		}
+		return nil, fmt.Errorf("VictoriaMetrics 中有 %d 条 %s 序列，但它们都不带 %s 标签，无法识别主机。%s",
+			len(data["cores"]), queryOf("cores", hl), hl, hint)
 	}
 	idents = dedupeByIdent(idents, meta.IP, meta.Live)
 	sort.Slice(idents, func(i, j int) bool {
@@ -1289,6 +1508,11 @@ func sliceMax(v []float64) float64 {
 
 // ResolveDSByProject 按项目名在全部数据源中定位，返回命中的第一个数据源ID
 func ResolveDSByProject(project string, c *N9EClient, maxDS int) (string, error) {
+	// 直连 VictoriaMetrics 时不存在「多个数据源」这一层：单机版整库一个数据源，
+	// 项目过滤由 ident 关键字（-n9e_project）在查询结果里完成，无需检索。
+	if c.isVM() {
+		return "", fmt.Errorf("VictoriaMetrics 模式没有数据源概念，无需按项目检索；项目过滤请用 -n9e_project，它会按 ident 关键字筛选主机")
+	}
 	log.Infof("未指定数据源，正在按项目名「%s」检索 n9e 各数据源……", project)
 	for i := 1; i <= maxDS; i++ {
 		ids, err := c.Idents(strconv.Itoa(i))
