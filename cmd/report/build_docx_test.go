@@ -136,7 +136,7 @@ func buildDemoDocx(t *testing.T) string {
 	}
 	out, err := BuildReport(&BuildInput{
 		Cfg: cfg, Rows: demoRows(), Waf: demoWaf(),
-		WS: now.AddDate(0, 0, -4), WE: now, Source: "单元测试",
+		WS: now.AddDate(0, 0, -4), WE: now,
 	})
 	if err != nil {
 		t.Fatalf("生成报告失败：%v", err)

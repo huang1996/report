@@ -289,14 +289,6 @@ func tsdbIsVM(cfg *Config) bool {
 	return m == TSDBModeVM || m == TSDBModeVMCluster
 }
 
-// dataSourceDesc 报告正文里展示的数据来源描述
-func dataSourceDesc(cfg *Config, ds string) string {
-	if tsdbIsVM(cfg) {
-		return fmt.Sprintf("VictoriaMetrics（%s）", cfg.Base)
-	}
-	return fmt.Sprintf("夜莺监控 n9e（%s，数据源 #%s）", cfg.Base, ds)
-}
-
 func runListDS(cfg *Config) {
 	cli := newN9EClient(cfg, cfg.DS, 60*time.Second)
 	cli.login()
@@ -441,10 +433,8 @@ func runOnce(cfg *Config, ws, we time.Time) {
 
 	// ---- 资源巡检数据（n9e）----
 	var rows []HostRow
-	srcDesc := ""
 	if cfg.Demo {
 		rows = demoRows()
-		srcDesc = "演示样例数据"
 	} else if cfg.Base == "" {
 		if tsdbIsVM(cfg) {
 			log.Warnf("未配置时序库地址（N9E_BASE / -n9e_base），本次报告将不含资源巡检数据。")
@@ -473,7 +463,6 @@ func runOnce(cfg *Config, ws, we time.Time) {
 			log.Errorf("%s 采集失败：%v", cli.label(), err)
 		} else {
 			rows = res
-			srcDesc = dataSourceDesc(cfg, ds)
 		}
 		// 周期内无数据（采集失败 / 无主机 / 指标全零）时，按该数据源最新数据伪造（-fake_when_empty）
 		if cfg.FakeWhenEmpty && !n9eHasData(rows) {
@@ -482,7 +471,6 @@ func runOnce(cfg *Config, ws, we time.Time) {
 				log.Errorf("周期内无数据，伪造数据失败：%v", ferr)
 			} else {
 				rows = faked
-				srcDesc = dataSourceDesc(cfg, ds)
 				log.Warnf("本周期（%s ~ %s）%s 无可用数据，已按数据源 #%s 的最新数据随机增减伪造 %d 台主机指标。"+
 					"注意：资源巡检章节的数值为伪造值，不可用于真实结论；WAF 章节不受影响。",
 					ws.Format("2006-01-02"), we.Format("2006-01-02"), cli.label(), ds, len(faked))
@@ -532,7 +520,7 @@ func runOnce(cfg *Config, ws, we time.Time) {
 
 	// ---- 拆分 / 生成 ----
 	path, err := BuildReport(&BuildInput{
-		Cfg: cfg, Rows: rows, Waf: waf, WafNote: wafNote, WS: ws, WE: we, Source: srcDesc,
+		Cfg: cfg, Rows: rows, Waf: waf, WafNote: wafNote, WS: ws, WE: we,
 	})
 	if err != nil {
 		log.Errorf("生成报告失败：%v", err)

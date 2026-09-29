@@ -18,7 +18,6 @@ type BuildInput struct {
 	Waf     *WafData // nil 表示本期未接入 WAF 数据
 	WafNote string   // WAF 数据获取异常时的说明
 	WS, WE  time.Time
-	Source  string // 数据来源描述
 }
 
 func reportTitle(cfg *Config, rows []HostRow) string {
@@ -205,14 +204,6 @@ func BuildReport(in *BuildInput) (string, error) {
 		objDesc = sprintf("%d 台主机 / %d 个业务系统", len(rows), maxInt(1, len(projects)))
 	} else if in.Waf != nil {
 		objDesc = sprintf("%d 个 WAF 防护应用", len(in.Waf.Apps))
-	}
-	srcDesc := in.Source
-	if in.Waf != nil {
-		if srcDesc != "" {
-			srcDesc += " + Safeline WAF 数据库"
-		} else {
-			srcDesc = "Safeline WAF 数据库"
-		}
 	}
 	d.TableCentered([]string{"项目", "内容", "项目", "内容"},
 		[][]string{
