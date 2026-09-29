@@ -1,0 +1,191 @@
+# ============================================================================
+# categraf 直写 VictoriaMetrics 配置模板（隔离机房场景，不依赖夜莺 n9e）
+#
+# 用法：整份覆盖目标主机的 categraf/conf/config.toml，替换 <...> 占位符后启动。
+# 依据 categraf main 分支的 conf/config.toml、config/config.go、config/hostname.go 核对。
+#
+# 本模板面向本仓库的巡检周报程序（-tsdb_mode=vm / vmcluster）。
+# 报告只「查询」指标，不需要告警判定，因此完全不涉及 n9e。
+# ============================================================================
+
+[global]
+# 启动时把生效配置打印到 stdout（排查用，生产建议 false）
+print_configs = false
+
+# agent_hostname 标签的取值，支持变量：$hostname / $ip / $sn / $ENV
+#   留空 = 本机 hostname
+#   "$hostname" = 显式使用本机 hostname
+# 注意：夜莺会把 agent_hostname 就地改名为 ident（见下方 [global.labels] 的说明），
+#       所以这个值实际上就是 n9e 侧看到的 ident，请与本环境原有配置保持一致。
+#       程序在直连模式下若取不到 ident，会自动改用这个标签作为主机标识——
+#       因此**只要这个值承载了主机标识，就不需要任何 [global.labels] 配置**。
+hostname = "$hostname"
+
+# true = 完全不发 agent_hostname 标签。
+# 本方案保持 false：ident 承担主键职责，agent_hostname 留作交叉核对。
+omit_hostname = false
+
+# 全局采集间隔（秒）
+interval = 15
+
+# 时间戳精度：ms / s。VictoriaMetrics 两者都接受，保持默认 ms 即可
+precision = "ms"
+
+# 插件来源：只用本地 conf 目录（默认即 local）
+providers = ["local"]
+
+# ---------------------------------------------------------------------------
+# 【可选】ident —— 报告解析 租户 / IP / 项目 / 角色 的标签名
+#
+# 背景：夜莺的 ident 就是 categraf 的 agent_hostname。n9e 在
+# pushgw/router/router_remotewrite.go 的 extractIdentFromTimeSeries 里做了就地改名：
+#
+#     case "agent_hostname":  hostnameIdx = i        // 扫描标签
+#     ...
+#     if ident == "" && hostnameIdx >= 0 {
+#         s.Labels[hostnameIdx].Name = "ident"       // ← 名字被改掉
+#         ident = s.Labels[hostnameIdx].Value        // 值不变
+#     }
+#
+# 也就是说：ident 的**值**来自 categraf 的 [global] hostname（经变量展开）。
+# 但「改名」这一步只发生在夜莺里；数据直接写进 VictoriaMetrics 时，
+# 序列上只会留 agent_hostname，不会凭空出现 ident。
+#
+# 报告程序对此做了等价处理：直连模式下先探测库里有没有 ident 标签，
+# 没有就自动改用 agent_hostname 作为主机标识（并打一条 WARN 说明），
+# 数值与解析结果完全不变。所以本节的配置只在两种情况下才需要：
+#
+#   情况一：想固化标签名、消掉那条 WARN
+#     → 打开下面的 [global.labels]，写 ident = "$hostname"（所有主机完全相同，无需定制）。
+#       这一行会还原出与原 n9e 环境逐字节一致的 ident。
+#
+#   情况二（少数）：你们的 ident 是显式写在 [global.labels] 里的自定义值，
+#     而 hostname 填的是普通主机名
+#     → 必须把原来那条 ident = "..." 原样抄过来（否则报告会按主机名解析，
+#       项目 / 角色列会不对）。此时库里两个标签并存，程序优先用 ident。
+#
+# 判别方法见本文件末尾「如何判断你们属于哪种情形」。
+#
+# ⚠️ 值里不要出现计划外的 $ 字符：变量替换使用 os.Expand，
+#    未定义的 $XXX 会被静默替换为空串，导致 ident 缺段。
+# ⚠️ 不要设置 [global] omit_hostname = true：那会剥掉 agent_hostname，
+#    在 n9e 环境里表现为机器列表的 OS / agent 版本全变 unknown；
+#    在 VM 直连环境里则会让主机标识彻底消失（连自动回退也会失败，程序直接报错）。
+# ---------------------------------------------------------------------------
+# 按需取消注释；hostname 已承载完整 ident 时，保持注释即可正常出报告。
+#[global.labels]
+#ident = "$hostname"
+
+# 情况二写成原样照抄，例如：
+# ident = "000042-10.192.168.4.11-隔离机房项目-应用服务器"
+# 可按需追加全局标签，例如：
+# env = "prod"
+# region = "<机房>"
+
+# 写入队列：batch = 单批样本数，chan_size = 内存队列长度
+# 源码默认 1000 / 1000000，一般无需调整
+[writer_opt]
+batch = 1000
+chan_size = 1000000
+
+# ---------------------------------------------------------------------------
+# 【必配】数据写入口 —— 指向 VictoriaMetrics，不再指向夜莺
+# ---------------------------------------------------------------------------
+[[writers]]
+# 单机版 VictoriaMetrics（8428 为默认端口）：
+url = "http://<vm-host>:8428/api/v1/write"
+
+# 集群版 vminsert（accountID 即租户号，单租户填 0）：
+#   url = "http://<vminsert-host>:8480/insert/0/prometheus/api/v1/write"
+#   此时报告程序要配套使用：-tsdb_mode=vmcluster -n9e_ds_id=0
+
+# 前面挂 vmauth / 网关做 Basic 认证时：
+# basic_auth_user = "<user>"
+# basic_auth_pass = "<pass>"
+
+# VictoriaMetrics 使用自签 HTTPS 证书时：
+# insecure_skip_verify = true
+
+# 超时设置，单位 ms
+timeout = 5000
+dial_timeout = 2500
+max_idle_conns_per_host = 100
+
+# ---------------------------------------------------------------------------
+# 【必关】心跳 —— 目标地址写死为夜莺接口
+# 隔离机房连不通 n9e，开着会持续刷连接失败日志。
+# 心跳只服务于夜莺「机器列表」页的元信息展示，对报告没有任何影响。
+# ---------------------------------------------------------------------------
+[heartbeat]
+enable = false
+
+# 自愈（ibex）组件：默认关闭，保持关闭
+[ibex]
+enable = false
+
+# categraf 自身 /metrics 暴露（pull 模式）：本方案不需要
+[http]
+enable = false
+
+# 日志：默认 stdout，交给 systemd/docker 收集即可
+[log]
+file_name = "stdout"
+# 需要落盘并轮转时：
+# file_name = "/var/log/categraf/categraf.log"
+# max_size = 100      # 单个文件上限 MB
+# max_age = 1         # 保留天数
+# max_backups = 1     # 保留文件数
+# compress = false
+
+# ============================================================================
+# 插件说明：categraf 的插件「有 conf/input.<name>/ 目录且目录内有 toml 文件」即启用，
+# 文件内容可以全是注释。要停用某插件，删掉对应目录或用 --inputs 只启用指定插件。
+#
+# 本报告依赖的插件（均在默认发行包内，无需额外配置）：
+#   input.system       → system_n_cpus（CPU 核数）、system_info（操作系统 / 内核 / host_ip）
+#   input.cpu          → cpu_usage_active（CPU 使用率与峰谷差）
+#   input.mem          → mem_used_percent、mem_total
+#   input.disk         → disk_total、disk_used_percent
+#   input.diskio       → diskio_io_util
+#   input.net          → net_bits_recv / net_bits_sent
+#   input.netstat      → netstat_tcp_inuse（部分系统为 input.sockstat）
+#   input.self_metrics → categraf_info{version}（报告的 agent 版本列）
+#
+# ⚠️ categraf-slim 精简包会裁掉插件：少了 input.system，操作系统列整列为空、
+#    CPU 架构列会全部落到兜底的 amd64；少了 input.self_metrics，agent 版本列为空。
+#
+# 验证：
+#   ./categraf --test --inputs system:cpu:mem:disk      # 只打印不发送，确认字段齐全
+#   ./categraf --test --inputs system                    # 单独看 system_info 的标签
+#
+# 一个容易踩的坑：$ip 的取值来源
+#   hostname / labels 中的 $ip 由 InitHostInfo 决定：
+#     ① 环境变量 HOSTIP 优先；
+#     ② 否则 UDP 探测「第一个非 localhost 的 writers 地址」所在网卡的出口 IP；
+#     ③ 若 writers 全是 127.0.0.1，则退化为探测 223.5.5.5:80；
+#     ④ 探测失败再退化为本机第一块非回环网卡。
+#   所以当 VM 与 categraf 同机部署（writers 写 127.0.0.1）时，
+#   $ip 可能取到非管理网段的 IP —— 此时请显式指定：HOSTIP=10.192.168.4.11 ./categraf
+#
+# ----------------------------------------------------------------------------
+# 如何判断你们是否需要 [global.labels] ident
+#
+# 第一步，看一台现有主机的 categraf 配置：
+#   grep -A5 '\[global\]' conf/config.toml        # 看 hostname 里有没有那串 租户-IP-项目-角色
+#   grep -A5 '\[global.labels\]' conf/config.toml # 看有没有显式 ident = "..."
+#
+# 第二步（更可靠），直接问时序库：agent_hostname 这个标签还在不在。
+#   curl -sk -H "Authorization: Bearer $N9E_TOKEN" \
+#     "$N9E_BASE/api/n9e/proxy/$DS_ID/api/v1/label/agent_hostname/values"
+#
+#   返回空数组 []  → hostname 承载了主机标识（ident 是被 n9e 改名出来的，
+#                    原标签在库里不复存在）
+#                    → 隔离机房**什么都不用配**，程序会自动用 agent_hostname；
+#                      想固化标签名、消掉 WARN，就加 ident = "$hostname"
+#   返回值列表      → 各台 categraf 显式配了 ident 全局标签（identIdx 命中后
+#                    n9e 不再改名，所以 agent_hostname 被保留下来）
+#                    → 隔离机房把原 ident 标签原样抄过来（否则会按主机名解析）
+#
+# 上机后可用程序自检（会打印实际生效的主机标识标签）：
+#   ./report -now -list-ds -tsdb_mode=vm -n9e_base=http://<vm-host>:8428
+# ============================================================================

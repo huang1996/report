@@ -70,8 +70,10 @@ docker compose run --rm report -list-ds
 
 | 环境变量 | 命令参数 | 说明 | 默认值 |
 |---|---|---|---|
-| `N9E_BASE` | `-n9e_base` | 夜莺 n9e 服务地址；**留空则不含资源巡检数据** | |
-| `N9E_DS_ID` | `-n9e_ds_id` | 数据源 ID（一个数据源≈一个项目） | `1` |
+| `TSDB_MODE` | `-tsdb_mode` | 时序库接入模式：`n9e`=经夜莺代理（默认）/ `vm`=直连 VictoriaMetrics 单机 / `vmcluster`=直连 vmselect 集群（详见「隔离机房」一节） | `n9e` |
+| `N9E_BASE` | `-n9e_base` | 夜莺 n9e 服务地址；`TSDB_MODE=vm/vmcluster` 时为 VictoriaMetrics 地址；**留空则不含资源巡检数据** | |
+| `N9E_DS_ID` | `-n9e_ds_id` | 数据源 ID（一个数据源≈一个项目）；`vmcluster` 模式下为租户 `accountID`（默认 `0`）；`vm` 模式下忽略 | `1` |
+| `N9E_HOST_LABEL` | `-n9e_host_label` | 主机标识标签名：`auto`=自动（`vm/vmcluster` 下 ident 缺失则回退 `agent_hostname`）/ `ident` / `agent_hostname` / 其他标签名 | `auto` |
 | `N9E_TOKEN` | `-n9e_token` | n9e 个人令牌（免认证部署可留空） | |
 | `N9E_USER` | `-n9e_user` | n9e 登录账号（与 `N9E_PASS` 配合） | |
 | `N9E_PASS` | `-n9e_pass` | n9e 登录密码 | |
@@ -119,6 +121,170 @@ docker compose run --rm report -list-ds
 > **布尔参数的写法**：`-flag`、`-flag=true`、`-flag true` 三种都支持
 > （启动时会把 `-flag true` 这类写法统一归一化，避免标准库在 `true` 处提前终止参数解析、
 > 导致其后的参数被静默忽略）。无法识别的参数会以 `WARN` 级别明确提示。
+
+## 隔离机房部署（categraf + VictoriaMetrics，不依赖 n9e）
+
+有些项目机房**不具备连接中心服务器的条件**。此时不必在机房内搭完整夜莺（n9e 依赖
+MySQL + Redis，且 n9e-edge 也必须连中心才能同步规则），最小依赖组合是：
+
+```
+各主机 Categraf ──remote write──▶ VictoriaMetrics ──Prometheus 兼容 API──▶ 本程序
+                (/api/v1/write)      (单二进制，:8428)                    (-tsdb_mode=vm)
+```
+
+三个组件都是**单二进制、无外部依赖**，可离线拷贝部署；本报告只需要「查询指标」，不涉及
+告警判定，所以完全用不到 n9e。程序与 VM 之间只走标准 Prometheus 兼容接口
+（`/api/v1/query`、`/query_range`、`/label/<name>/values`），与走夜莺代理时是同一套。
+
+### 1. VictoriaMetrics
+
+```bash
+./victoria-metrics -storageDataPath=/opt/victoria-metrics/data \
+  -httpListenAddr=:8428 -retentionPeriod=90d
+```
+
+单机版开箱即用。若机房内部署的是 `vmselect` 集群版，把 `-tsdb_mode` 换成 `vmcluster`，
+并用 `-n9e_ds_id` 指定租户 `accountID`（单租户为 `0`）。
+
+### 2. Categraf：一处必配、一处必关
+
+完整可直接使用的模板见 [`deploy/categraf/config.toml.example`](deploy/categraf/config.toml.example)，
+核心就是下面这几行：
+
+```toml
+# conf/config.toml
+[global]
+hostname = "$hostname"     # 与原 n9e 环境保持完全一致（ident 的值就来自这里）
+interval = 15
+
+[[writers]]
+url = "http://<vm-host>:8428/api/v1/write"   # 直写时序库，不再走 :17000/prometheus/v1/write
+
+# 【必关】机房连不到 n9e，心跳若不关会持续刷失败日志；
+# 心跳只服务于夜莺的「机器列表」，对报告没有影响。
+[heartbeat]
+enable = false
+```
+
+**改动就这两处：writer 指向时序库、关掉心跳。** 若 `hostname` 本身就是那串
+`<租户>-<IP>-<项目>-<角色>`，则**不需要**写任何 `[global.labels]`：
+程序在直连模式下会自动改用 categraf 默认写入的 `agent_hostname` 作为主机标识
+（见下节，两者本来就是同一个值）。
+
+集群版时序库把 writers 换成 `http://<vminsert-host>:8480/insert/<accountID>/prometheus/api/v1/write`，
+程序侧配套用 `-tsdb_mode=vmcluster -n9e_ds_id=<accountID>`。
+
+#### 为什么不用手工再打一个 `ident` 标签
+
+夜莺里的 `ident` **就是** categraf 的 `agent_hostname`。n9e 在
+`pushgw/router/router_remotewrite.go` 的 `extractIdentFromTimeSeries` 里做了就地改名：
+
+```go
+if ident == "" && hostnameIdx >= 0 {
+    // 没有 ident 标签，尝试使用 agent_hostname 作为 ident
+    s.Labels[hostnameIdx].Name = "ident"    // ← 只改名字，值不动
+    ident = s.Labels[hostnameIdx].Value
+}
+```
+
+也就是说 ident 的**值**来自 categraf 的 `[global] hostname`（经变量展开），夜莺只负责把标签名换掉。
+而「改名」这一步只发生在夜莺内部——数据直接写进 VictoriaMetrics 时，序列上只有 `agent_hostname`。
+
+程序侧对这一步做了等价处理：**VM 模式下先探测库里有没有 `ident` 标签，没有就自动改用
+`agent_hostname` 作为主机标识**，只打一条 WARN（提示 ident 缺失、可选加固），数值与解析结果完全不变。
+探测到 ident 时优先用 ident，因此不会影响「显式配了 `[global.labels] ident`」的环境。
+
+| 时段序库里的标签 | 程序使用的主机标识 |
+|---|---|
+| `ident`（显式配了 global label，或库里混有 n9e 转发的数据） | `ident`（优先） |
+| 只有 `agent_hostname`（categraf 直写、未配 global label） | **自动回退 `agent_hostname`** |
+| 两者都没有（开了 `omit_hostname` 或插件被裁剪） | 报错并给出 categraf 配置指引，不产出空报告 |
+
+#### 主机标识标签的手工指定（`-n9e_host_label`）
+
+自动探测覆盖绝大多数场景，需要时可用 `-n9e_host_label`（或环境变量 `N9E_HOST_LABEL`）固定下来：
+
+| 取值 | 行为 |
+|---|---|
+| `auto`（默认） | 直连时序库时自动探测：ident 优先，缺失回退 `agent_hostname`；n9e 模式恒用 ident，不探测 |
+| `ident` | 固定用 `ident` |
+| `agent_hostname` | 固定用 `agent_hostname` |
+| 其他标签名 | 固定用该标签（如自研采集端写入的 `host`），查询表达式里的 `by (ident)` 会同步替换 |
+
+`-list-ds` 在 VM 模式下会顺带打印探测结果，现场排障时最有用：
+
+```bash
+./report -now -list-ds -tsdb_mode=vm -n9e_base=http://127.0.0.1:8428
+# VictoriaMetrics 模式（tsdb_mode=vm）没有「多个数据源」的概念，整个库就是一个数据源：
+#   地址：http://127.0.0.1:8428
+#   主机标识标签：agent_hostname
+```
+
+#### 若你们的 hostname 不是那串 ident
+
+即 categraf 的 `[global] hostname` 填的是普通主机名，而 ident 由
+`[global.labels] ident = "..."` 承载——那就把原来那条 `ident = "..."` 原样抄过来即可
+（此时库里两个标签并存，程序按优先级用 ident）。判别方法：
+
+- 看一台现有主机的 `conf/config.toml`：`hostname` 里是不是那串 `<租户>-<IP>-<项目>-<角色>`；
+- 更可靠的做法是查时序库里 `agent_hostname` 标签是否还存在（返回空 = ident 来自 hostname，
+  返回值列表 = 显式配了 `ident` 全局标签，因为 identIdx 命中后 n9e 就不再改名）：
+
+```bash
+curl -sk -H "Authorization: Bearer $N9E_TOKEN" \
+  "$N9E_BASE/api/n9e/proxy/$DS_ID/api/v1/label/agent_hostname/values"
+```
+
+> Tips：需要 IP 段时 `$ip` 变量仍然可用（如 `ident = "000042-$ip-<项目>-<角色>"`）。
+> 它的取值是「探测 writers 目标网卡的出口 IP」，可用环境变量 `HOSTIP` 覆盖；
+> 当 VM 与 categraf 同机、writers 写 `127.0.0.1` 时探测会退化为本机第一块非回环网卡，
+> 可能取到非管理网段地址——这种部署请显式设置 `HOSTIP=<管理IP>`。
+> 另外 `omit_hostname = true` 会剥掉 `agent_hostname`：在 n9e 环境里表现为机器列表的
+> OS / agent 版本全变 unknown，在隔离环境里则会让主机标识彻底消失（回退也会失败）——不要开。
+
+### 3. 报告字段 ← 指标 ← 插件 对照
+
+| 报告字段 | 依赖指标 | categraf 插件 |
+|---|---|---|
+| CPU 核数 | `system_n_cpus` | `input.system` |
+| CPU 使用率 / 峰谷差 | `cpu_usage_active` | `input.cpu` |
+| 内存 | `mem_used_percent`、`mem_total` | `input.mem` |
+| 磁盘容量 / 使用率 | `disk_total`、`disk_used_percent` | `input.disk` |
+| 磁盘 IO | `diskio_io_util` | `input.diskio` |
+| 网络流量 | `net_bits_recv`、`net_bits_sent` | `input.net` |
+| 连接数 | `netstat_tcp_inuse` / `sockstat_tcp_inuse` | `input.netstat` / `input.sockstat` |
+| **操作系统 / CPU 架构** | `system_info`（os_name、kernel_version、host_ip） | `input.system` |
+| **agent 版本** | `categraf_info`（`version` 标签） | `input.self_metrics` |
+
+上表插件均在 categraf 默认发行包内，无需任何额外配置即可工作（插件的启用条件是
+`conf/input.<name>/` 目录存在且目录内有 toml 文件，文件内容可以全是注释；
+要停用就删掉对应目录）。务必确认 `conf/input.system` 与
+`conf/input.self_metrics` 两个目录未被删除（**`categraf-slim` 精简包会裁掉插件**）：
+少了前者，操作系统列整列为空、CPU 架构列会全部落到兜底的 `amd64`；少了后者，agent 版本列为空。
+
+上机前建议先只打印不发送，确认字段齐全：
+
+```bash
+./categraf --test --inputs system:cpu:mem:disk   # 观察 system_info / system_n_cpus 的标签
+```
+
+### 4. 程序侧
+
+```bash
+./report -now -tsdb_mode=vm -n9e_base=http://127.0.0.1:8428 \
+  -n9e_project=<项目名关键字> -report_name=<报告名称>
+```
+
+- `-n9e_base` 在 VM 模式下就是 VictoriaMetrics 地址；`-n9e_ds_id` 被忽略（`-list-ds` 会提示该模式无数据源概念）。
+- 项目过滤改用 `-n9e_project`：它按主机标识（ident / agent_hostname）关键字匹配主机（不会再「检索数据源」）。
+- 若机房内也不允许外联 WebDAV，不配 `WEBDAV_*` 即可，报告落在 `-report_dir` 本地目录。
+- 程序可以部署在机房内任何能访问 VM 的主机上（VM 与程序同机部署也是常见做法）。
+
+> 排查提示：日志出现「时序库中没有 ident 标签，已自动改用 agent_hostname」是**正常**的自动回退
+> （categraf 未配 `[global.labels] ident`），报告结果不受影响；用 `-n9e_host_label=agent_hostname`
+> 可把这条 WARN 消掉。若改而出现「既没有 ident 标签、也没有 agent_hostname 标签」，
+> 才说明主机标识彻底缺失（`omit_hostname = true` 或插件被裁剪），此时程序直接报错并给出配置位置，
+> 而不是产出「0 台主机」的空报告。
 
 ## n9e 请求重试（`-n9e_retry`）
 
