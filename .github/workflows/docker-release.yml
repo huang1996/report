@@ -5,6 +5,7 @@
 #   git tag v0.1.0 && git push origin v0.1.0
 #
 # 产出：
+#   0. 测试门禁：gofmt / go vet / go test 全部通过后才会进入构建（任何一步失败则不发布）
 #   1. Docker Hub 镜像 huangtao1996/report:<tag> 与 huangtao1996/report:latest
 #      （linux/amd64 + linux/arm64 双架构）
 #   2. GitHub Release：
@@ -24,9 +25,38 @@ on:
       - 'v*'
 
 jobs:
+  # ---------- 测试门禁：gofmt / vet / test 全过才允许构建与发布 ----------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go 1.23
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: gofmt 格式检查
+        run: |
+          UNFORMATTED="$(gofmt -l .)"
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::以下文件未通过 gofmt 格式检查："
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: go vet 静态检查
+        run: go vet ./...
+
+      - name: go test 全量测试
+        run: go test ./... -count=1
+
   # ---------- 构建并推送多架构镜像 ----------
   docker:
     runs-on: ubuntu-latest
+    needs: [test]   # 测试不过不构建
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -74,6 +104,7 @@ jobs:
   # ---------- 交叉编译各平台二进制 ----------
   binaries:
     runs-on: ubuntu-latest
+    needs: [test]   # 测试不过不构建
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
