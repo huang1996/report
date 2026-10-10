@@ -190,7 +190,7 @@ func TestTableNumbersSequential(t *testing.T) {
 }
 
 // TestTableAlignment 对齐规则：
-//   - 「风险研判与优化建议」（风险台账）与「下周巡检重点」两节的表格保留默认对齐
+//   - 「风险研判与优化建议」（风险台账）与「后续工作重点」两节的表格保留默认对齐
 //     （长文本左对齐，便于阅读）；
 //   - 其余表格全部单元格居中。
 func TestTableAlignment(t *testing.T) {
@@ -215,7 +215,7 @@ func TestTableAlignment(t *testing.T) {
 		case strings.HasPrefix(head, "序号|巡检"):
 			sawPlan = true
 			if aligns["left"] == 0 {
-				t.Errorf("下周巡检重点（第 %d 个表）应保留长文本左对齐，实得 %v", i+1, aligns)
+				t.Errorf("后续工作重点（第 %d 个表）应保留长文本左对齐，实得 %v", i+1, aligns)
 			}
 		default:
 			if aligns["left"] > 0 || aligns["(none)"] > 0 {
@@ -233,7 +233,7 @@ func TestTableAlignment(t *testing.T) {
 		t.Error("未找到风险台账表格，测试前提已失效")
 	}
 	if !sawPlan {
-		t.Error("未找到下周巡检重点工作表格，测试前提已失效")
+		t.Error("未找到后续工作重点表格，测试前提已失效")
 	}
 	if !sawDisk {
 		t.Error("未找到「磁盘分区使用明细」表格（表头应为 IP 地址|挂载点|文件系统|容量|已用|使用率|状态）")

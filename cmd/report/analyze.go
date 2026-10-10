@@ -198,7 +198,7 @@ type Risk struct {
 	Level, Desc, Suggest string
 }
 
-// Plan 下周计划行
+// Plan 后续工作计划行
 type Plan struct {
 	No, Item string
 }
@@ -306,7 +306,7 @@ func buildFindings(rows []HostRow, a *Analysis) *Findings {
 	}
 	f.Risks = raw
 
-	// 下周计划（保留 2 条，重新编号）
+	// 后续工作计划（保留 2 条，重新编号）
 	plans := []Plan{
 		{"1", "峰值负载成因专项排查（Top 进程 / 慢查询 / 定时任务）"},
 		{"2", "补充 1 分钟粒度采样，验证峰值持续时长"},

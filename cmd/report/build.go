@@ -212,8 +212,8 @@ func BuildReport(in *BuildInput) (string, error) {
 		},
 		[]float64{2.7, 5.8, 2.7, 4.4}, nil, 9.5, false)
 
-	// 二、本周总体结论
-	d.Heading(1, "2、本周总体结论")
+	// 二、总体结论
+	d.Heading(1, "2、总体结论")
 	overall := "正常"
 	overallDesc := "各项指标均在安全区间"
 	if len(rows) > 0 {
@@ -395,13 +395,13 @@ func BuildReport(in *BuildInput) (string, error) {
 	if len(risks) == 0 {
 		risks = append(risks, []string{"R1", "本期未发现需要处置的风险项", "低", suggest("低")})
 	}
-	// 风险台账与下周巡检重点两节保留默认对齐：描述/建议为长文本，左对齐更易读
+	// 风险台账与后续工作重点两节保留默认对齐：描述/建议为长文本，左对齐更易读
 	d.Table([]string{"编号", "风险描述", "等级", "建议措施"}, risks,
 		[]float64{1.3, 6.6, 1.4, 7.1}, map[int]bool{2: true}, 9, false)
 	d.Caption(sprintf("表 %d　风险台账（等级：紧急 / 严重 / 警告 / 提示 / 低；各等级对应固定处置措施，见建议措施列）", tn.next()))
 
-	// 下周巡检重点
-	d.Heading(1, sprintf("%d、下周巡检重点", ch+1))
+	// 后续工作重点
+	d.Heading(1, sprintf("%d、后续工作重点", ch+1))
 	var plans [][]string
 	for _, p := range fnd.Plans {
 		plans = append(plans, []string{p.No, p.Item})
@@ -413,7 +413,7 @@ func BuildReport(in *BuildInput) (string, error) {
 		plans = append(plans, []string{"1", "常规巡检"})
 	}
 	d.Table([]string{"序号", "巡检 / 跟进事项"}, plans, []float64{0.9, 15.7}, nil, 9, false)
-	d.Caption(sprintf("表 %d　下周重点工作计划", tn.next()))
+	d.Caption(sprintf("表 %d　后续重点工作计划", tn.next()))
 
 	if err := os.MkdirAll(cfg.ReportDir, 0o755); err != nil {
 		return "", err
@@ -491,10 +491,10 @@ func buildWafChapter(d *Docx, w *WafData, ch int, tn *tableNo) {
 	d.Heading(2, h2("2 访问数据统计"))
 	d.Heading(3, h2("2.1 按地理区域统计访问数据"))
 	if len(w.Geos) == 0 {
-		d.Body("本周暂无访问数据。")
+		d.Body("报告周期内暂无访问数据。")
 	} else {
 		top := w.Geos[0]
-		d.Body(fmt.Sprintf("本周访问数据主要来自 %s %s（%s），访问次数为 %s，具体数据可参看下表。",
+		d.Body(fmt.Sprintf("报告周期内访问数据主要来自 %s %s（%s），访问次数为 %s，具体数据可参看下表。",
 			orDash(top.Province), orDash(top.City), orDash(top.Country), comma(top.Count)))
 		geos := w.Geos
 		if len(geos) > 30 { // 仅展示访问次数前 30 的地区
@@ -514,9 +514,9 @@ func buildWafChapter(d *Docx, w *WafData, ch int, tn *tableNo) {
 	}
 	d.Heading(3, h2("2.2 按访问 IP 统计访问数据 TOP10"))
 	if len(w.AccessIPs) == 0 {
-		d.Body("本周暂无访问数据。")
+		d.Body("报告周期内暂无访问数据。")
 	} else {
-		d.Body(fmt.Sprintf("本周主要访问 IP 为 %s，访问次数为 %s，具体数据可参看下表。", w.AccessIPs[0].IP, comma(w.AccessIPs[0].Count)))
+		d.Body(fmt.Sprintf("报告周期内主要访问 IP 为 %s，访问次数为 %s，具体数据可参看下表。", w.AccessIPs[0].IP, comma(w.AccessIPs[0].Count)))
 		var rows [][]string
 		for _, s := range w.AccessIPs {
 			rows = append(rows, []string{s.IP, s.AttackType, comma(s.Count)})
@@ -529,9 +529,9 @@ func buildWafChapter(d *Docx, w *WafData, ch int, tn *tableNo) {
 	d.Heading(2, h2("3 攻击数据统计"))
 	d.Heading(3, h2("3.1 按攻击方式统计数据"))
 	if len(w.AttackTys) == 0 {
-		d.Body("本周暂无攻击数据，您的 WAF 很安全。")
+		d.Body("报告周期内暂无攻击数据，您的 WAF 很安全。")
 	} else {
-		d.Body(fmt.Sprintf("本周的主要攻击类型为「%s」，该类型总计攻击 %s 次，具体数据如下图表所示。",
+		d.Body(fmt.Sprintf("报告周期内的主要攻击类型为「%s」，该类型总计攻击 %s 次，具体数据如下图表所示。",
 			w.AttackTys[0].Type, comma(w.AttackTys[0].Count)))
 		items := make([]PieItem, len(w.AttackTys))
 		for i, at := range w.AttackTys {
@@ -554,9 +554,9 @@ func buildWafChapter(d *Docx, w *WafData, ch int, tn *tableNo) {
 	}
 	d.Heading(3, h2("3.2 按攻击 IP 统计攻击数据 TOP10"))
 	if len(w.AttackIPs) == 0 {
-		d.Body("本周暂无攻击数据，您的 WAF 很安全。")
+		d.Body("报告周期内暂无攻击数据，您的 WAF 很安全。")
 	} else {
-		d.Body(fmt.Sprintf("本周的攻击主要来自 %s，攻击类型为「%s」，总计攻击 %s 次，具体数据参看下表。",
+		d.Body(fmt.Sprintf("报告周期内的攻击主要来自 %s，攻击类型为「%s」，总计攻击 %s 次，具体数据参看下表。",
 			w.AttackIPs[0].IP, w.AttackIPs[0].AttackType, comma(w.AttackIPs[0].Count)))
 		var rows [][]string
 		for _, s := range w.AttackIPs {
@@ -569,9 +569,9 @@ func buildWafChapter(d *Docx, w *WafData, ch int, tn *tableNo) {
 	// n.4 未拦截攻击明细
 	d.Heading(2, h2("4 未拦截攻击明细"))
 	if len(w.NotBlocked) == 0 {
-		d.Body("本周暂无未拦截攻击，所有攻击都被拒之门外。")
+		d.Body("报告周期内暂无未拦截攻击，所有攻击都被拒之门外。")
 	} else {
-		d.Body(fmt.Sprintf("本周有 %d 条攻击未被拦截，我们将对其进行分析和拦截处理，具体数据参看下表。", len(w.NotBlocked)))
+		d.Body(fmt.Sprintf("报告周期内有 %d 条攻击未被拦截，我们将对其进行分析和拦截处理，具体数据参看下表。", len(w.NotBlocked)))
 		var rows [][]string
 		for _, r := range w.NotBlocked {
 			rows = append(rows, []string{orDash(r.App), orDash(r.SrcIP), orDash(r.Host), orDash(r.Path),
