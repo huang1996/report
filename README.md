@@ -2,7 +2,7 @@
 
 > ## ⚠️ 本项目由纯 AI 生成 ⚠️
 >
-> **本项目（全部 Go 代码、Dockerfile、docker-compose、文档）100% 由 AI（WorkBuddy 智能体）自动生成，未经人工代码审查。**
+> **本项目（全部 Go 代码、Dockerfile、docker-compose、文档）100% 由 AI（WorkBuddy 智能体）自动生成，未经人工代码审查。**  
 > 使用前请务必：① 审查代码逻辑与安全性；② 在测试环境充分验证后再上生产；③ 自行承担部署风险。
 
 将「云资源巡检周报」（夜莺 n9e 数据源）与 [safeline-report](https://github.com/huang1996/safeline-report)（雷池 WAF 巡检）两套脚本合并为一个 Go 程序：**输出一份同时包含资源巡检与 WAF 安全巡检的 docx 周报**。
@@ -14,17 +14,17 @@
 
 ## 报告结构（合并后）
 
-| 章节 | 内容 | 来源 |
-|---|---|---|
-| 1、报告信息 | 报告名称 / 周期 / 对象 | 巡检周报 |
-| 2、总体结论 | 综合评级 + 资源结论 + WAF 拦截概览 | 两者融合 |
-| 2.1 关键指标概览 | CPU / 内存 / 磁盘 / 带宽 / 连接数 KPI 表 | 巡检周报 |
-| 3、资源水位分析 | 图 1~5（当前 vs 峰值、IO、峰谷差、总览） | 巡检周报 |
-| 4、巡检明细 | 表 3~6（资源明细 / 归属规格 / 性能网络 / 磁盘分区明细） | 巡检周报 |
-| 5、业务巡检 | 留空，人工填写（`-report_include_biz` 开启） | 巡检周报 |
+| 章节              | 内容                                                                       | 来源              |
+| --------------- | ------------------------------------------------------------------------ | --------------- |
+| 1、报告信息          | 报告名称 / 周期 / 对象                                                           | 巡检周报            |
+| 2、总体结论          | 综合评级 + 资源结论 + WAF 拦截概览                                                   | 两者融合            |
+| 2.1 关键指标概览      | CPU / 内存 / 磁盘 / 带宽 / 连接数 KPI 表                                           | 巡检周报            |
+| 3、资源水位分析        | 图 1~5（当前 vs 峰值、IO、峰谷差、总览）                                                | 巡检周报            |
+| 4、巡检明细          | 表 3~6（资源明细 / 归属规格 / 性能网络 / 磁盘分区明细）                                       | 巡检周报            |
+| 5、业务巡检          | 留空，人工填写（`-report_include_biz` 开启）                                        | 巡检周报            |
 | 6、Web 应用防火墙安全巡检 | 6.1 防护应用概览 / 6.2 访问统计（地域、IP TOP10）/ 6.3 攻击统计（类型饼图、IP TOP10）/ 6.4 未拦截攻击明细 | safeline-report |
-| 7、风险研判与优化建议 | 资源风险 + WAF 未拦截风险（自动合并） | 两者融合 |
-| 8、后续工作重点 | 计划表（含 WAF 处置项） | 两者融合 |
+| 7、风险研判与优化建议     | 资源风险 + WAF 未拦截风险（自动合并）                                                   | 两者融合            |
+| 8、后续工作重点        | 计划表（含 WAF 处置项）                                                           | 两者融合            |
 
 ## Docker Compose 部署示例
 
@@ -65,66 +65,66 @@ docker compose run --rm report -list-ds
 
 ## 参数 × 环境变量 对照表
 
-**优先级：命令参数显式传入 > 环境变量 > 内置默认值。**
+**优先级：命令参数显式传入 > 环境变量 > 内置默认值。**  
 双通道配置项命名规则：**环境变量大写、命令参数同名小写**（如 `N9E_DS_ID` ↔ `-n9e_ds_id`）。
 
-| 环境变量 | 命令参数 | 说明 | 默认值 |
-|---|---|---|---|
-| `TSDB_MODE` | `-tsdb_mode` | 时序库接入模式：`n9e`=经夜莺代理（默认）/ `vm`=直连 VictoriaMetrics 单机 / `vmcluster`=直连 vmselect 集群（详见「隔离机房」一节） | `n9e` |
-| `N9E_BASE` | `-n9e_base` | 夜莺 n9e 服务地址；`TSDB_MODE=vm/vmcluster` 时为 VictoriaMetrics 地址；**留空则不含资源巡检数据** | |
-| `N9E_DS_ID` | `-n9e_ds_id` | 数据源 ID（一个数据源≈一个项目）；`vmcluster` 模式下为租户 `accountID`（默认 `0`）；`vm` 模式下忽略 | `1` |
-| `N9E_HOST_LABEL` | `-n9e_host_label` | 主机标识标签名：`auto`=自动（`vm/vmcluster` 下 ident 缺失则回退 `agent_hostname`）/ `ident` / `agent_hostname` / 其他标签名 | `auto` |
-| `N9E_TOKEN` | `-n9e_token` | n9e 个人令牌（免认证部署可留空） | |
-| `N9E_USER` | `-n9e_user` | n9e 登录账号（与 `N9E_PASS` 配合） | |
-| `N9E_PASS` | `-n9e_pass` | n9e 登录密码 | |
-| `N9E_PROJECT` | `-n9e_project` | 项目名关键字：ident 含该关键字的主机才纳入统计；未指定 `N9E_DS_ID` 时按它在全部数据源中检索 | |
-| `N9E_MAX_DS` | `-n9e_max_ds` | 自动检索数据源时的最大编号 | `90` |
-| `N9E_RETRY` | `-n9e_retry` | n9e 请求遇瞬时错误的重试**总次数**（含首次），`1`=不重试（详见下节） | `4` |
-| `N9E_RETRY_BACKOFF` | `-n9e_retry_backoff` | 首次退避秒数，之后按 2 倍递增（单次上限 30s） | `3` |
-| `REPORT_NAME` | `-report_name` | 自定义报告名称；留空则按单一业务系统自动生成「XX巡检周报」 | |
-| `REPORT_ENGINEER` | `-report_engineer` | 运维工程师，一处配置三处生效：① 覆盖各主机工程师 ② 报告信息表 ③ WebDAV 上传目录名（为空时上传到 `report/default/`） | |
-| `WAF_DATABASE_URL` | `-waf_database_url` | Safeline PostgreSQL 连接串；**留空则跳过 WAF 章节**（旧名 `DATABASE_URL` 兼容） | |
-| `WAF_EXCEPT_APP_IDS` | `-waf_except_app_ids` | 排除的 WAF 应用 ID，逗号分隔 | |
-| `WAF_EXCEPT_IPS` | `-waf_except_ips` | 排除的 WAF 访问来源 IP，逗号分隔 | |
-| `REPORT_DIR` | `-report_dir` | 报告输出目录 | `/app/report` |
-| `REPORT_TIME` | `-report_time` | 定时模式每日触发时刻 `HH:MM` | `12:00` |
-| `REPORT_HEADER` | `-report_header` | 报告页眉文字（每页顶部居中显示） | `统筹运维项目` |
-| `REPORT_INCLUDE_BIZ` | `-report_include_biz` | 是否添加「业务巡检」章节（`1`/`true` 开启） | 不添加 |
-| `REPORT_FAKE_WHEN_EMPTY` | `-fake_when_empty` | 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标（详见下节） | 关闭 |
-| `REPORT_RUN_WEEKDAYS` | `-report_run_weekdays` | 定时模式下仅在这些星期生成（`0`=周日…`6`=周六，逗号分隔） | 每天 |
-| `LOG_LEVEL` | `-log_level` | 日志等级：DEBUG / INFO / WARN / ERROR | `INFO` |
-| `WEBDAV_HOSTNAME` | `-webdav_hostname` | WebDAV 上传地址；**不配则只存本地** | |
-| `WEBDAV_LOGIN` | `-webdav_login` | WebDAV 账号 | |
-| `WEBDAV_PASSWORD` | `-webdav_password` | WebDAV 密码 | |
+| 环境变量                     | 命令参数                   | 说明                                                                                                   | 默认值           |
+| ------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------- | ------------- |
+| `TSDB_MODE`              | `-tsdb_mode`           | 时序库接入模式：`n9e`=经夜莺代理（默认）/ `vm`=直连 VictoriaMetrics 单机 / `vmcluster`=直连 vmselect 集群（详见「隔离机房」一节）         | `n9e`         |
+| `N9E_BASE`               | `-n9e_base`            | 夜莺 n9e 服务地址；`TSDB_MODE=vm/vmcluster` 时为 VictoriaMetrics 地址；**留空则不含资源巡检数据**                           |               |
+| `N9E_DS_ID`              | `-n9e_ds_id`           | 数据源 ID（一个数据源≈一个项目）；`vmcluster` 模式下为租户 `accountID`（默认 `0`）；`vm` 模式下忽略                                 | `1`           |
+| `N9E_HOST_LABEL`         | `-n9e_host_label`      | 主机标识标签名：`auto`=自动（`vm/vmcluster` 下 ident 缺失则回退 `agent_hostname`）/ `ident` / `agent_hostname` / 其他标签名 | `auto`        |
+| `N9E_TOKEN`              | `-n9e_token`           | n9e 个人令牌（免认证部署可留空）                                                                                   |               |
+| `N9E_USER`               | `-n9e_user`            | n9e 登录账号（与 `N9E_PASS` 配合）                                                                            |               |
+| `N9E_PASS`               | `-n9e_pass`            | n9e 登录密码                                                                                             |               |
+| `N9E_PROJECT`            | `-n9e_project`         | 项目名关键字：ident 含该关键字的主机才纳入统计；未指定 `N9E_DS_ID` 时按它在全部数据源中检索                                              |               |
+| `N9E_MAX_DS`             | `-n9e_max_ds`          | 自动检索数据源时的最大编号                                                                                        | `90`          |
+| `N9E_RETRY`              | `-n9e_retry`           | n9e 请求遇瞬时错误的重试**总次数**（含首次），`1`=不重试（详见下节）                                                             | `4`           |
+| `N9E_RETRY_BACKOFF`      | `-n9e_retry_backoff`   | 首次退避秒数，之后按 2 倍递增（单次上限 30s）                                                                           | `3`           |
+| `REPORT_NAME`            | `-report_name`         | 自定义报告名称；留空则按单一业务系统自动生成「XX巡检周报」                                                                       |               |
+| `REPORT_ENGINEER`        | `-report_engineer`     | 运维工程师，一处配置三处生效：① 覆盖各主机工程师 ② 报告信息表 ③ WebDAV 上传目录名（为空时上传到 `report/default/`）                           |               |
+| `WAF_DATABASE_URL`       | `-waf_database_url`    | Safeline PostgreSQL 连接串；**留空则跳过 WAF 章节**（旧名 `DATABASE_URL` 兼容）                                       |               |
+| `WAF_EXCEPT_APP_IDS`     | `-waf_except_app_ids`  | 排除的 WAF 应用 ID，逗号分隔                                                                                   |               |
+| `WAF_EXCEPT_IPS`         | `-waf_except_ips`      | 排除的 WAF 访问来源 IP，逗号分隔                                                                                 |               |
+| `REPORT_DIR`             | `-report_dir`          | 报告输出目录                                                                                               | `/app/report` |
+| `REPORT_TIME`            | `-report_time`         | 定时模式每日触发时刻 `HH:MM`                                                                                   | `12:00`       |
+| `REPORT_HEADER`          | `-report_header`       | 报告页眉文字（每页顶部居中显示）                                                                                     | `统筹运维项目`      |
+| `REPORT_INCLUDE_BIZ`     | `-report_include_biz`  | 是否添加「业务巡检」章节（`1`/`true` 开启）                                                                          | 不添加           |
+| `REPORT_FAKE_WHEN_EMPTY` | `-fake_when_empty`     | 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标（详见下节）                                                            | 关闭            |
+| `REPORT_RUN_WEEKDAYS`    | `-report_run_weekdays` | 定时模式下仅在这些星期生成（`0`=周日…`6`=周六，逗号分隔）                                                                    | 每天            |
+| `LOG_LEVEL`              | `-log_level`           | 日志等级：DEBUG / INFO / WARN / ERROR                                                                     | `INFO`        |
+| `WEBDAV_HOSTNAME`        | `-webdav_hostname`     | WebDAV 上传地址；**不配则只存本地**                                                                              |               |
+| `WEBDAV_LOGIN`           | `-webdav_login`        | WebDAV 账号                                                                                            |               |
+| `WEBDAV_PASSWORD`        | `-webdav_password`     | WebDAV 密码                                                                                            |               |
 
 ### 仅命令行参数（无对应环境变量）
 
-| 命令参数 | 说明 | 默认值 |
-|---|---|---|
-| `-period` | 周期口径：`check`=巡检周（周六~周五）/ `week`=自然周（周一~周日）/ `fri`=周五~次周四 / `days`=最近 N 个完整天（滚动）/ `range`=`-start`~`-end` 整段一份 | `check` |
-| `-start` | 起始日期 `YYYY-MM-DD` | |
-| `-end` | 结束日期 `YYYY-MM-DD`；只指定 `-end` 时往前推 `-days` 天 | |
-| `-days` | 往前推的天数；`-period days` 时为滚动窗口天数 | `7` |
-| `-step` | Prometheus 采样步长（秒） | `300` |
-| `-layout` | ident 命名解析规则：`auto` / `section-first` / `project-first` | `auto` |
-| `-ident_engineer_tail` | 【已弃用】曾用于从 `ident` 末尾段推断运维工程师；现工程师只认 `-report_engineer`，此项不再生效 | `auto` |
-| `-split` | 报告拆分维度：`none` / `project` / `section` | `none` |
-| `-chart-top` | 图表最多展示的主机台数，`0`=全部 | `18` |
-| `-out` | 输出 docx 路径（仅单份报告时生效） | |
-| `-dump` | 只打印采集到的数据，不生成报告 | |
-| `-list-ds` | 列出 n9e 全部数据源清单后退出 | |
-| `-insecure` | 跳过 HTTPS 证书校验 | |
-| `-now` | 立即执行一次后退出（否则常驻定时执行） | |
-| `-demo` | 使用内置样例数据生成报告（本地验证） | |
-| `-version` | 打印版本信息后退出 | |
+| 命令参数                   | 说明                                                                                                            | 默认值     |
+| ---------------------- | -------------------------------------------------------------------------------------------------------       | ------- |
+| `-period`              | 周期口径：`check`=巡检周（周六~周五）/ `week`=自然周（周一~周日）/ `fri`=周五~次周四 / `days`=最近 N 个完整天（滚动）/ `range`=`-start`~`-end` 整段一份 | `check` |
+| `-start`               | 起始日期 `YYYY-MM-DD`                                                                                             |         |
+| `-end`                 | 结束日期 `YYYY-MM-DD`；只指定 `-end` 时往前推 `-days` 天                                                                   |         |
+| `-days`                | 往前推的天数；`-period days` 时为滚动窗口天数                                                                                | `7`     |
+| `-step`                | Prometheus 采样步长（秒）                                                                                            | `300`   |
+| `-layout`              | ident 命名解析规则：`auto` / `section-first` / `project-first`                                                       | `auto`  |
+| `-ident_engineer_tail` | 【已弃用】曾用于从 `ident` 末尾段推断运维工程师；现工程师只认 `-report_engineer`，此项不再生效                                                 | `auto`  |
+| `-split`               | 报告拆分维度：`none` / `project` / `section`                                                                         | `none`  |
+| `-chart-top`           | 图表最多展示的主机台数，`0`=全部                                                                                            | `18`    |
+| `-out`                 | 输出 docx 路径（仅单份报告时生效）                                                                                          |         |
+| `-dump`                | 只打印采集到的数据，不生成报告                                                                                               |         |
+| `-list-ds`             | 列出 n9e 全部数据源清单后退出                                                                                             |         |
+| `-insecure`            | 跳过 HTTPS 证书校验                                                                                                 |         |
+| `-now`                 | 立即执行一次后退出（否则常驻定时执行）                                                                                           |         |
+| `-demo`                | 使用内置样例数据生成报告（本地验证）                                                                                            |         |
+| `-version`             | 打印版本信息后退出                                                                                                     |         |
 
-> **布尔参数的写法**：`-flag`、`-flag=true`、`-flag true` 三种都支持
-> （启动时会把 `-flag true` 这类写法统一归一化，避免标准库在 `true` 处提前终止参数解析、
+> **布尔参数的写法**：`-flag`、`-flag=true`、`-flag true` 三种都支持  
+> （启动时会把 `-flag true` 这类写法统一归一化，避免标准库在 `true` 处提前终止参数解析、  
 > 导致其后的参数被静默忽略）。无法识别的参数会以 `WARN` 级别明确提示。
 
 ## 隔离机房部署（categraf + VictoriaMetrics，不依赖 n9e）
 
-有些项目机房**不具备连接中心服务器的条件**。此时不必在机房内搭完整夜莺（n9e 依赖
+有些项目机房**不具备连接中心服务器的条件**。此时不必在机房内搭完整夜莺（n9e 依赖  
 MySQL + Redis，且 n9e-edge 也必须连中心才能同步规则），最小依赖组合是：
 
 ```
@@ -132,8 +132,8 @@ MySQL + Redis，且 n9e-edge 也必须连中心才能同步规则），最小依
                 (/api/v1/write)      (单二进制，:8428)                    (-tsdb_mode=vm)
 ```
 
-三个组件都是**单二进制、无外部依赖**，可离线拷贝部署；本报告只需要「查询指标」，不涉及
-告警判定，所以完全用不到 n9e。程序与 VM 之间只走标准 Prometheus 兼容接口
+三个组件都是**单二进制、无外部依赖**，可离线拷贝部署；本报告只需要「查询指标」，不涉及  
+告警判定，所以完全用不到 n9e。程序与 VM 之间只走标准 Prometheus 兼容接口  
 （`/api/v1/query`、`/query_range`、`/label/<name>/values`），与走夜莺代理时是同一套。
 
 ### 1. VictoriaMetrics
@@ -143,12 +143,12 @@ MySQL + Redis，且 n9e-edge 也必须连中心才能同步规则），最小依
   -httpListenAddr=:8428 -retentionPeriod=90d
 ```
 
-单机版开箱即用。若机房内部署的是 `vmselect` 集群版，把 `-tsdb_mode` 换成 `vmcluster`，
+单机版开箱即用。若机房内部署的是 `vmselect` 集群版，把 `-tsdb_mode` 换成 `vmcluster`，  
 并用 `-n9e_ds_id` 指定租户 `accountID`（单租户为 `0`）。
 
 ### 2. Categraf：一处必配、一处必关
 
-完整可直接使用的模板见 [`deploy/categraf/config.toml.example`](deploy/categraf/config.toml.example)，
+完整可直接使用的模板见 [`deploy/categraf/config.toml.example`](deploy/categraf/config.toml.example)，  
 核心就是下面这几行：
 
 ```toml
@@ -166,17 +166,17 @@ url = "http://<vm-host>:8428/api/v1/write"   # 直写时序库，不再走 :1700
 enable = false
 ```
 
-**改动就这两处：writer 指向时序库、关掉心跳。** 若 `hostname` 本身就是那串
-`<租户>-<IP>-<项目>-<角色>`，则**不需要**写任何 `[global.labels]`：
-程序在直连模式下会自动改用 categraf 默认写入的 `agent_hostname` 作为主机标识
+**改动就这两处：writer 指向时序库、关掉心跳。** 若 `hostname` 本身就是那串  
+`<租户>-<IP>-<项目>-<角色>`，则**不需要**写任何 `[global.labels]`：  
+程序在直连模式下会自动改用 categraf 默认写入的 `agent_hostname` 作为主机标识  
 （见下节，两者本来就是同一个值）。
 
-集群版时序库把 writers 换成 `http://<vminsert-host>:8480/insert/<accountID>/prometheus/api/v1/write`，
+集群版时序库把 writers 换成 `http://<vminsert-host>:8480/insert/<accountID>/prometheus/api/v1/write`，  
 程序侧配套用 `-tsdb_mode=vmcluster -n9e_ds_id=<accountID>`。
 
 #### 为什么不用手工再打一个 `ident` 标签
 
-夜莺里的 `ident` **就是** categraf 的 `agent_hostname`。n9e 在
+夜莺里的 `ident` **就是** categraf 的 `agent_hostname`。n9e 在  
 `pushgw/router/router_remotewrite.go` 的 `extractIdentFromTimeSeries` 里做了就地改名：
 
 ```go
@@ -187,29 +187,29 @@ if ident == "" && hostnameIdx >= 0 {
 }
 ```
 
-也就是说 ident 的**值**来自 categraf 的 `[global] hostname`（经变量展开），夜莺只负责把标签名换掉。
+也就是说 ident 的**值**来自 categraf 的 `[global] hostname`（经变量展开），夜莺只负责把标签名换掉。  
 而「改名」这一步只发生在夜莺内部——数据直接写进 VictoriaMetrics 时，序列上只有 `agent_hostname`。
 
-程序侧对这一步做了等价处理：**VM 模式下先探测库里有没有 `ident` 标签，没有就自动改用
-`agent_hostname` 作为主机标识**，只打一条 WARN（提示 ident 缺失、可选加固），数值与解析结果完全不变。
+程序侧对这一步做了等价处理：**VM 模式下先探测库里有没有 `ident` 标签，没有就自动改用  
+`agent_hostname` 作为主机标识**，只打一条 WARN（提示 ident 缺失、可选加固），数值与解析结果完全不变。  
 探测到 ident 时优先用 ident，因此不会影响「显式配了 `[global.labels] ident`」的环境。
 
-| 时段序库里的标签 | 程序使用的主机标识 |
-|---|---|
-| `ident`（显式配了 global label，或库里混有 n9e 转发的数据） | `ident`（优先） |
-| 只有 `agent_hostname`（categraf 直写、未配 global label） | **自动回退 `agent_hostname`** |
-| 两者都没有（开了 `omit_hostname` 或插件被裁剪） | 报错并给出 categraf 配置指引，不产出空报告 |
+| 时段序库里的标签                                         | 程序使用的主机标识                  |
+| ------------------------------------------------ | -------------------------- |
+| `ident`（显式配了 global label，或库里混有 n9e 转发的数据）       | `ident`（优先）                |
+| 只有 `agent_hostname`（categraf 直写、未配 global label） | **自动回退 `agent_hostname`**  |
+| 两者都没有（开了 `omit_hostname` 或插件被裁剪）                 | 报错并给出 categraf 配置指引，不产出空报告 |
 
 #### 主机标识标签的手工指定（`-n9e_host_label`）
 
 自动探测覆盖绝大多数场景，需要时可用 `-n9e_host_label`（或环境变量 `N9E_HOST_LABEL`）固定下来：
 
-| 取值 | 行为 |
-|---|---|
-| `auto`（默认） | 直连时序库时自动探测：ident 优先，缺失回退 `agent_hostname`；n9e 模式恒用 ident，不探测 |
-| `ident` | 固定用 `ident` |
-| `agent_hostname` | 固定用 `agent_hostname` |
-| 其他标签名 | 固定用该标签（如自研采集端写入的 `host`），查询表达式里的 `by (ident)` 会同步替换 |
+| 取值               | 行为                                                           |
+| ---------------- | ------------------------------------------------------------ |
+| `auto`（默认）       | 直连时序库时自动探测：ident 优先，缺失回退 `agent_hostname`；n9e 模式恒用 ident，不探测 |
+| `ident`          | 固定用 `ident`                                                  |
+| `agent_hostname` | 固定用 `agent_hostname`                                         |
+| 其他标签名            | 固定用该标签（如自研采集端写入的 `host`），查询表达式里的 `by (ident)` 会同步替换          |
 
 `-list-ds` 在 VM 模式下会顺带打印探测结果，现场排障时最有用：
 
@@ -222,12 +222,12 @@ if ident == "" && hostnameIdx >= 0 {
 
 #### 若你们的 hostname 不是那串 ident
 
-即 categraf 的 `[global] hostname` 填的是普通主机名，而 ident 由
-`[global.labels] ident = "..."` 承载——那就把原来那条 `ident = "..."` 原样抄过来即可
+即 categraf 的 `[global] hostname` 填的是普通主机名，而 ident 由  
+`[global.labels] ident = "..."` 承载——那就把原来那条 `ident = "..."` 原样抄过来即可  
 （此时库里两个标签并存，程序按优先级用 ident）。判别方法：
 
 - 看一台现有主机的 `conf/config.toml`：`hostname` 里是不是那串 `<租户>-<IP>-<项目>-<角色>`；
-- 更可靠的做法是查时序库里 `agent_hostname` 标签是否还存在（返回空 = ident 来自 hostname，
+- 更可靠的做法是查时序库里 `agent_hostname` 标签是否还存在（返回空 = ident 来自 hostname，  
   返回值列表 = 显式配了 `ident` 全局标签，因为 identIdx 命中后 n9e 就不再改名）：
 
 ```bash
@@ -235,32 +235,33 @@ curl -sk -H "Authorization: Bearer $N9E_TOKEN" \
   "$N9E_BASE/api/n9e/proxy/$DS_ID/api/v1/label/agent_hostname/values"
 ```
 
-> Tips：需要 IP 段时 `$ip` 变量仍然可用（如 `ident = "000042-$ip-<项目>-<角色>"`）。
-> 它的取值是「探测 writers 目标网卡的出口 IP」，可用环境变量 `HOSTIP` 覆盖；
-> 当 VM 与 categraf 同机、writers 写 `127.0.0.1` 时探测会退化为本机第一块非回环网卡，
-> 可能取到非管理网段地址——这种部署请显式设置 `HOSTIP=<管理IP>`。
-> 另外 `omit_hostname = true` 会剥掉 `agent_hostname`：在 n9e 环境里表现为机器列表的
+> Tips：需要 IP 段时 `$ip` 变量仍然可用（如 `ident = "000042-$ip-<项目>-<角色>"`）。  
+> 它的取值是「探测 writers 目标网卡的出口 IP」，可用环境变量 `HOSTIP` 覆盖；  
+> 当 VM 与 categraf 同机、writers 写 `127.0.0.1` 时探测会退化为本机第一块非回环网卡，  
+> 可能取到非管理网段地址——这种部署请显式设置 `HOSTIP=<管理IP>`。  
+> 另外 `omit_hostname = true` 会剥掉 `agent_hostname`：在 n9e 环境里表现为机器列表的  
 > OS / agent 版本全变 unknown，在隔离环境里则会让主机标识彻底消失（回退也会失败）——不要开。
 
 ### 3. 报告字段 ← 指标 ← 插件 对照
 
-| 报告字段 | 依赖指标 | categraf 插件 |
-|---|---|---|
-| CPU 核数 | `system_n_cpus` | `input.system` |
-| CPU 使用率 / 峰谷差 | `cpu_usage_active` | `input.cpu` |
-| 内存 | `mem_used_percent`、`mem_total` | `input.mem` |
-| 磁盘容量 / 使用率 | `disk_total`、`disk_used_percent` | `input.disk` |
-| 磁盘 IO | `diskio_io_util` | `input.diskio` |
-| 网络流量 | `net_bits_recv`、`net_bits_sent` | `input.net` |
-| 连接数 | `netstat_tcp_inuse` / `sockstat_tcp_inuse` | `input.netstat` / `input.sockstat` |
-| **操作系统 / CPU 架构** | `system_info`（os_name、kernel_version、host_ip） | `input.system` |
-| **agent 版本** | `categraf_info`（`version` 标签） | `input.self_metrics` |
+| 报告字段              | 依赖指标                                          | categraf 插件                        |
+| ----------------- | --------------------------------------------- | ---------------------------------- |
+| CPU 核数            | `system_n_cpus`                               | `input.system`                     |
+| CPU 使用率 / 峰谷差     | `cpu_usage_active`                            | `input.cpu`                        |
+| 内存                | `mem_used_percent`、`mem_total`                | `input.mem`                        |
+| 磁盘容量 / 使用率        | `disk_total`、`disk_used_percent`              | `input.disk`                       |
+| 磁盘 IO             | `diskio_io_util`                              | `input.diskio`                     |
+| 网络流量              | `net_bits_recv`、`net_bits_sent`               | `input.net`                        |
+| 连接数               | `netstat_tcp_inuse` / `sockstat_tcp_inuse`    | `input.netstat` / `input.sockstat` |
+| **操作系统 / CPU 架构** | `system_info`（os_name、kernel_version、host_ip） | `input.system`                     |
+| **agent 版本**      | `categraf_info`（`version` 标签）                 | `input.self_metrics`               |
 
-上表插件均在 categraf 默认发行包内，无需任何额外配置即可工作（插件的启用条件是
-`conf/input.<name>/` 目录存在且目录内有 toml 文件，文件内容可以全是注释；
-要停用就删掉对应目录）。务必确认 `conf/input.system` 与
-`conf/input.self_metrics` 两个目录未被删除（**`categraf-slim` 精简包会裁掉插件**）：
+上表插件均在 categraf 默认发行包内，无需任何额外配置即可工作（插件的启用条件是  
+`conf/input.<name>/` 目录存在且目录内有 toml 文件，文件内容可以全是注释；  
+要停用就删掉对应目录）。务必确认 `conf/input.system` 与  
+`conf/input.self_metrics` 两个目录未被删除（**`categraf-slim` 精简包会裁掉插件**）：  
 少了前者，操作系统列整列为空、CPU 架构列会全部落到兜底的 `amd64`；少了后者，agent 版本列为空。
+
 
 上机前建议先只打印不发送，确认字段齐全：
 
@@ -280,38 +281,38 @@ curl -sk -H "Authorization: Bearer $N9E_TOKEN" \
 - 若机房内也不允许外联 WebDAV，不配 `WEBDAV_*` 即可，报告落在 `-report_dir` 本地目录。
 - 程序可以部署在机房内任何能访问 VM 的主机上（VM 与程序同机部署也是常见做法）。
 
-> 排查提示：日志出现「时序库中没有 ident 标签，已自动改用 agent_hostname」是**正常**的自动回退
-> （categraf 未配 `[global.labels] ident`），报告结果不受影响；用 `-n9e_host_label=agent_hostname`
-> 可把这条 WARN 消掉。若改而出现「既没有 ident 标签、也没有 agent_hostname 标签」，
-> 才说明主机标识彻底缺失（`omit_hostname = true` 或插件被裁剪），此时程序直接报错并给出配置位置，
+> 排查提示：日志出现「时序库中没有 ident 标签，已自动改用 agent_hostname」是**正常**的自动回退  
+> （categraf 未配 `[global.labels] ident`），报告结果不受影响；用 `-n9e_host_label=agent_hostname`  
+> 可把这条 WARN 消掉。若改而出现「既没有 ident 标签、也没有 agent_hostname 标签」，  
+> 才说明主机标识彻底缺失（`omit_hostname = true` 或插件被裁剪），此时程序直接报错并给出配置位置，  
 > 而不是产出「0 台主机」的空报告。
 
 ## n9e 请求重试（`-n9e_retry`）
 
-夜莺经网关访问偶发 502 / 响应头超时（日志形如
-`n9e 采集失败：n9e 查询失败: avg by (ident) (cpu_usage_active) -> HTTP 502: net/http: timeout awaiting response headers`），
-过一会儿重试即可成功。但采集是**单次失败即整段退出**的：一次瞬时抖动会让整份报告缺失
+夜莺经网关访问偶发 502 / 响应头超时（日志形如  
+`n9e 采集失败：n9e 查询失败: avg by (ident) (cpu_usage_active) -> HTTP 502: net/http: timeout awaiting response headers`），  
+过一会儿重试即可成功。但采集是**单次失败即整段退出**的：一次瞬时抖动会让整份报告缺失  
 资源巡检章节（只剩 WAF 与报告信息），因此程序对**瞬时错误**自动做指数退避重试。
 
-| 分类 | 具体情形 | 是否重试 |
-|---|---|---|
-| 瞬时 | HTTP 5xx（含 502/503/504）、429 限流、408 超时 | ✅ |
-| 瞬时 | 连接被重置 / 读写超时 / TLS 握手失败 | ✅ |
-| 瞬时 | HTTP 200 但正文不是 JSON（网关异常时返回错误页 / 首页 HTML） | ✅ |
-| 确定性 | 400 查询语法错误、401/403 鉴权、404 路由不存在 | ❌ 立即返回 |
+| 分类  | 具体情形                                      | 是否重试   |
+| --- | ----------------------------------------- | ------ |
+| 瞬时  | HTTP 5xx（含 502/503/504）、429 限流、408 超时     | ✅      |
+| 瞬时  | 连接被重置 / 读写超时 / TLS 握手失败                   | ✅      |
+| 瞬时  | HTTP 200 但正文不是 JSON（网关异常时返回错误页 / 首页 HTML） | ✅      |
+| 确定性 | 400 查询语法错误、401/403 鉴权、404 路由不存在           | ❌ 立即返回 |
 
-- **退避**：首次 `N9E_RETRY_BACKOFF` 秒，之后翻倍，单次上限 30s，并叠加 ±20% 抖动
+- **退避**：首次 `N9E_RETRY_BACKOFF` 秒，之后翻倍，单次上限 30s，并叠加 ±20% 抖动  
   （避免多个查询在同一时刻一起重试形成尖峰）。默认共尝试 4 次，退避约 3s → 6s → 12s。
-- **日志**：每次失败都记一条 WARN，含第几次 / 共几次 / 下次间隔，便于事后区分
+- **日志**：每次失败都记一条 WARN，含第几次 / 共几次 / 下次间隔，便于事后区分  
   「网关抖动、重试已救回」与「持续故障」；若最终仍失败，错误信息会标注已重试次数。
-- **调参**：`-n9e_retry 6 -n9e_retry_backoff 5` 可容忍更长的抖动窗口；
+- **调参**：`-n9e_retry 6 -n9e_retry_backoff 5` 可容忍更长的抖动窗口；  
   `-n9e_retry 1` 关闭重试（排查问题时用，失败能立刻看到原始错误）。
 - 登录接口（`/api/n9e/auth/login`）失败不重试——它以匿名方式继续访问代理接口，本身不是致命错误。
 
 ## 周期内无数据时的伪造数据（`-fake_when_empty`）
 
-当巡检周期内 n9e 采集不到数据（采集中断、数据源刚接入无历史数据、周期尚未产生数据等），
-默认会打印「本周期无可用数据，跳过」并且不生成报告。加上 `-fake_when_empty` 后，
+当巡检周期内 n9e 采集不到数据（采集中断、数据源刚接入无历史数据、周期尚未产生数据等），  
+默认会打印「本周期无可用数据，跳过」并且不生成报告。加上 `-fake_when_empty` 后，  
 将以该数据源的**最新数据**为基准随机增减，伪造出本周期的资源巡检指标，使报告仍能完整生成。
 
 ```bash
@@ -322,16 +323,16 @@ docker compose run --rm report -now -fake_when_empty
 **工作机制**
 
 1. 先判定周期内是否真的无数据（采集失败 / 无主机 / 各项指标与采样率全为 0 均视为无数据）；
-2. 查询该数据源**最近 1 小时**的数据作为基准（仅保存在内存中，**不写入磁盘**；
+2. 查询该数据源**最近 1 小时**的数据作为基准（仅保存在内存中，**不写入磁盘**；  
    一次运行补齐多个周期时共用同一份基准，不会每个周期重复查询）；
-3. 以基准主机列表为母本，对使用率类指标做随机增减（当前值 ±15%、峰值 ±25%，越接近 100% 上行空间越小，
+3. 以基准主机列表为母本，对使用率类指标做随机增减（当前值 ±15%、峰值 ±25%，越接近 100% 上行空间越小，  
    不会出现整 100% 的假值），峰值不低于当前值；
 4. 基准查询失败或未取到有效数据时**不做伪造**，该周期仍按「无可用数据，跳过」处理。
 
 **边界**
 
 - **仅作用于 n9e 资源巡检指标**；WAF（safeline）章节的数据与判定完全不受影响；
-- 硬件规格（核数 / 内存容量 / 磁盘容量）与归属信息（网络分区 / 业务系统 / 主机角色 / 操作系统 /
+- 硬件规格（核数 / 内存容量 / 磁盘容量）与归属信息（网络分区 / 业务系统 / 主机角色 / 操作系统 /  
   CPU 架构 / agent 版本 / 工程师）保持基准原值，不做伪造；
 - 伪造的数值**不可用于真实结论**，日志会以 WARN 级别明确提示；报告正文不做标注，使用前请自行确认。
 
@@ -347,15 +348,15 @@ n9e 的 `ident` 用 `-` 分隔、各段含义全靠约定，没有独立字段�
 000063-泸州市委组织部-公务员培训网-db                              租户-含连字符的项目-角色
 ```
 
-`-layout` 决定是否切出「网络分区」：`auto` 在项目段以「区」结尾时按 `section-first` 处理，
+`-layout` 决定是否切出「网络分区」：`auto` 在项目段以「区」结尾时按 `section-first` 处理，  
 否则按 `project-first`；也可显式指定。
 
 ### 运维工程师不从 `ident` 推断
 
-`ident` 里的**技术角色词**与**姓名**在字面上完全无法区分——`数据库`、`中间件`、`前后端`、
+`ident` 里的**技术角色词**与**姓名**在字面上完全无法区分——`数据库`、`中间件`、`前后端`、  
 `大屏`、`政务网`、`主数据库` 等角色词，和 `邹源`、`佘发彬`、`张登杰` 等人名一样都是 2~4 个纯汉字。
 
-早期版本按「摘掉末尾段后仍能解析出角色就当姓名」的启发式判定，在
+早期版本按「摘掉末尾段后仍能解析出角色就当姓名」的启发式判定，在  
 `租户-IP-项目-子项目-角色` 这类四段式 `ident` 上会把角色误判成工程师：
 
 ```
@@ -364,43 +365,43 @@ n9e 的 `ident` 用 `-` 分隔、各段含义全靠约定，没有独立字段�
         新 → 项目=公共信用信息共享平台，角色=信用二期-中间件
 ```
 
-因此**运维工程师一律不从 `ident` 推断**，`ident` 末段统一并入角色（信息不丢失），
-工程师只认 `-report_engineer`（或 `REPORT_ENGINEER` 环境变量）手动指定；
+因此**运维工程师一律不从 `ident` 推断**，`ident` 末段统一并入角色（信息不丢失），  
+工程师只认 `-report_engineer`（或 `REPORT_ENGINEER` 环境变量）手动指定；  
 未指定时报告显示 `—`。
 
-> `-ident_engineer_tail` 参数已弃用且不再影响解析结果，保留仅为兼容旧启动脚本
+> `-ident_engineer_tail` 参数已弃用且不再影响解析结果，保留仅为兼容旧启动脚本  
 > （传入非 `auto` 值时输出一条 WARN 提示）。
 
 ### 同一主机的历史残留 `ident` 去重
 
-`system_n_cpus` 等指标在**查询窗口内会累计「出现过的」时间序列**，运维改过主机名时
+`system_n_cpus` 等指标在**查询窗口内会累计「出现过的」时间序列**，运维改过主机名时  
 同一台物理机会同时存在多个 `ident`，导致报表出现同一 IP 多行、且旧 `ident` 常解析不出角色。
 
-程序以 `system_info`（主机当前状态快照，非累计计数器）为「当前活跃 `ident`」的权威依据，
-按 IP 归并去重，优先级为：**在快照中 > 自带 IP 段 > 字符更长**。
-既不在快照中、又无法定位 IP 的 `ident` 判为改名残留直接丢弃；
+程序以 `system_info`（主机当前状态快照，非累计计数器）为「当前活跃 `ident`」的权威依据，  
+按 IP 归并去重，优先级为：**在快照中 > 自带 IP 段 > 字符更长**。  
+既不在快照中、又无法定位 IP 的 `ident` 判为改名残留直接丢弃；  
 若 `system_info` 查询失败（无从判断），则原样保留以免误删主机。
 
-> 注意三个口径的宽窄：`/label/ident/values`（全留存期） ⊃ `query_range`（查询窗口内） ⊃
+> 注意三个口径的宽窄：`/label/ident/values`（全留存期） ⊃ `query_range`（查询窗口内） ⊃  
 > `system_info`（当前快照）。排查 ident 问题时别混用。
 
 ## 磁盘容量与使用率的统计口径
 
 **磁盘容量 = 该主机全部本地挂载点之和**，而不是某一个分区的容量。
 
-早先的实现取「使用率最高的那个分区」的容量，多挂载点主机因此严重低估——例如
-`10.82.9.9` 的 `/` 为 38 GB、`/mnt` 为 492 GB，因 `/` 使用率（33.4%）略高于 `/mnt`（32.9%）
+早先的实现取「使用率最高的那个分区」的容量，多挂载点主机因此严重低估——例如  
+`10.82.9.9` 的 `/` 为 38 GB、`/mnt` 为 492 GB，因 `/` 使用率（33.4%）略高于 `/mnt`（32.9%）  
 而只统计了 38 GB。实测 483 台主机中有 468 台存在多个挂载点。
 
 聚合时有两个必要的收敛动作：
 
-| 动作 | 原因 | 实例 |
-|---|---|---|
-| **按设备去重** | 同一块块设备常被挂载到多个路径（bind mount、Docker 子目录） | `dm-0` 同时挂在 `/data`、`/mnt/arkbase_backups`、`/mnt/arkbase_backups2`（各 999 GB），相加会虚增 3 倍 |
-| **剔除网络/共享文件系统** | 不是主机自带容量，且同一卷可能被多台主机重复挂载 | 某主机挂了 100 TB 的 NFS 数据卷（对象网关后端），单台就能把全量容量抬高一个量级 |
+| 动作              | 原因                                     | 实例                                                                                     |
+| --------------- | -------------------------------------- | -------------------------------------------------------------------------------------- |
+| **按设备去重**       | 同一块块设备常被挂载到多个路径（bind mount、Docker 子目录） | `dm-0` 同时挂在 `/data`、`/mnt/arkbase_backups`、`/mnt/arkbase_backups2`（各 999 GB），相加会虚增 3 倍 |
+| **剔除网络/共享文件系统** | 不是主机自带容量，且同一卷可能被多台主机重复挂载               | 某主机挂了 100 TB 的 NFS 数据卷（对象网关后端），单台就能把全量容量抬高一个量级                                         |
 
-排除的 `fstype` 前缀：`nfs` / `nfs4` / `cifs` / `smb` / `smbfs` / `fuse.` / `ceph` /
-`glusterfs` / `9p` / `afs` / `sshfs` / `davfs`。若某台主机**只**挂了共享存储，
+排除的 `fstype` 前缀：`nfs` / `nfs4` / `cifs` / `smb` / `smbfs` / `fuse.` / `ceph` /  
+`glusterfs` / `9p` / `afs` / `sshfs` / `davfs`。若某台主机**只**挂了共享存储，  
 则回退为全部计入，避免容量显示成 0。
 
 **磁盘使用率**按各挂载点容量加权，与容量口径保持一致：
@@ -409,38 +410,38 @@ n9e 的 `ident` 用 `-` 分隔、各段含义全靠约定，没有独立字段�
 使用率 = Σ(挂载点容量 × 该挂载点使用率) / Σ挂载点容量
 ```
 
-因此表 2/表 3 的「磁盘使用率」是**整机加权值**，而非单分区最紧张值——单分区接近写满时
+因此表 2/表 3 的「磁盘使用率」是**整机加权值**，而非单分区最紧张值——单分区接近写满时  
 该值会被大盘稀释，需要看单机明细时请以主机侧 `df` 为准。
 
 容量列的显示单位自动切换：满 1024 GB 起显示为 TB（如 `12.0 TB`），否则显示 GB。
 
 ### 磁盘分区使用明细（表 6）
 
-表 2/表 3 的磁盘使用率是**整机加权值**，单分区接近写满会被大盘稀释。为便于定位单分区风险，
-第 4 章巡检明细末尾附一张**逐挂载点**的分区明细表（IP 地址 / 挂载点 / 文件系统 / 容量 / 已用 /
+表 2/表 3 的磁盘使用率是**整机加权值**，单分区接近写满会被大盘稀释。为便于定位单分区风险，  
+第 4 章巡检明细末尾附一张**逐挂载点**的分区明细表（IP 地址 / 挂载点 / 文件系统 / 容量 / 已用 /  
 使用率 / 状态），状态沿用磁盘分级阈值（≥75% 提示、≥80% 警告、≥90% 严重、≥95% 紧急）。
 
 该表只列**真实分区**，两类噪音会被剔除：
 
-| 剔除对象 | 判定依据 | 实例 |
-|---|---|---|
-| 内存文件系统 | `fstype` 为 `tmpfs` / `devtmpfs` / `overlay` / `squashfs` / `efivarfs` / `proc` / `sysfs` 等 | `/dev/shm`、`/var/lib/docker/overlay2` |
-| 运行时虚拟目录 | 挂载点前缀为 `/run`、`/dev`、`/sys`、`/proc`、`/snap`、`/var/lib/docker` | Docker 的 `/run/docker/runtime-runc/moby/<id>/runc.xxxxxx`（单个数据源可达上百条） |
+| 剔除对象    | 判定依据                                                                                       | 实例                                                                    |
+| ------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| 内存文件系统  | `fstype` 为 `tmpfs` / `devtmpfs` / `overlay` / `squashfs` / `efivarfs` / `proc` / `sysfs` 等 | `/dev/shm`、`/var/lib/docker/overlay2`                                 |
+| 运行时虚拟目录 | 挂载点前缀为 `/run`、`/dev`、`/sys`、`/proc`、`/snap`、`/var/lib/docker`                              | Docker 的 `/run/docker/runtime-runc/moby/<id>/runc.xxxxxx`（单个数据源可达上百条） |
 
-同一设备挂到多个路径时（bind mount、Docker 子目录）**只保留一个代表挂载点**，
+同一设备挂到多个路径时（bind mount、Docker 子目录）**只保留一个代表挂载点**，  
 代表路径的选择是确定性的：容量大者优先 → 路径更短者 → 字典序。
 
-> 与表 4 的口径差异：表 4 的「磁盘容量」仅统计主机本地存储且不含共享存储，表 6 **包含 NFS 等
+> 与表 4 的口径差异：表 4 的「磁盘容量」仅统计主机本地存储且不含共享存储，表 6 **包含 NFS 等  
 > 共享存储**（共享存储同样会写满），因此两表的容量不可直接对照。
 
 ### CPU 架构（表 4）
 
-表 4「主机归属与资源规格」在 CPU 规格（核数）之后给出 **CPU 架构**，取值沿用 Go 的 `GOARCH`
-命名：`amd64` / `arm64` / `arm` / `386` / `ppc64le` / `s390x` / `loong64` / `riscv64` / `sw64` 等，
+表 4「主机归属与资源规格」在 CPU 规格（核数）之后给出 **CPU 架构**，取值沿用 Go 的 `GOARCH`  
+命名：`amd64` / `arm64` / `arm` / `386` / `ppc64le` / `s390x` / `loong64` / `riscv64` / `sw64` 等，  
 便于与镜像、二进制产物的架构对照。
 
-架构**只能从 `system_info` 的 `kernel_version` 标签里解析**——已枚举全部数据源的指标名与标签名，
-n9e 侧不存在 `arch` / `os_arch` / `machine` / `uname` 等标签，categraf 也未上报此类信息。
+架构**只能从 `system_info` 的 `kernel_version` 标签里解析**——已枚举全部数据源的指标名与标签名，  
+n9e 侧不存在 `arch` / `os_arch` / `machine` / `uname` 等标签，categraf 也未上报此类信息。  
 可解析的形态是内核版本串末尾带架构标记，例如：
 
 ```
@@ -449,67 +450,67 @@ n9e 侧不存在 `arch` / `os_arch` / `machine` / `uname` 等标签，categraf �
 6.6.0-159.4.3.154.oe2403sp4.aarch64      → arm64   （openEuler ARM）
 ```
 
-以下形态的内核串**本身不含架构信息**，这类主机（以及完全没有 `system_info` 的主机）
+以下形态的内核串**本身不含架构信息**，这类主机（以及完全没有 `system_info` 的主机）  
 **统一按 `amd64` 计**，因此表中该列**恒有值**，不会出现「—」：
 
-| 形态 | 实例 | 说明 |
-|---|---|---|
-| Ubuntu / Debian 通用内核 | `6.8.0-60-generic` | x86 与 arm 版本同名，无法区分 |
-| Windows | `10.0.14393 Build 14393` | NT 内核版本串不含架构 |
+| 形态                   | 实例                       | 说明                  |
+| -------------------- | ------------------------ | ------------------- |
+| Ubuntu / Debian 通用内核 | `6.8.0-60-generic`       | x86 与 arm 版本同名，无法区分 |
+| Windows              | `10.0.14393 Build 14393` | NT 内核版本串不含架构        |
 
-> **代价要说清**：兜底为 `amd64` 意味着，若集群里恰好有一台架构无法判定的 **arm** 主机
-> （例如跑 Ubuntu 通用内核的国产 ARM 服务器），它会被记成 `amd64`。绝大多数无法判定的主机
-> 是 x86 服务器，故该默认值在整体上是准确的；若需逐个精确，仍应在主机侧补充采集
-> （让 categraf 的 `exec` / 自定义 `script` 插件输出 `uname -m`）——那之后该主机会走解析结果，
-> 不再落到默认值。当前实测全量 377 台有 `system_info` 的主机中约 210 台可解析出架构，
+> **代价要说清**：兜底为 `amd64` 意味着，若集群里恰好有一台架构无法判定的 **arm** 主机  
+> （例如跑 Ubuntu 通用内核的国产 ARM 服务器），它会被记成 `amd64`。绝大多数无法判定的主机  
+> 是 x86 服务器，故该默认值在整体上是准确的；若需逐个精确，仍应在主机侧补充采集  
+> （让 categraf 的 `exec` / 自定义 `script` 插件输出 `uname -m`）——那之后该主机会走解析结果，  
+> 不再落到默认值。当前实测全量 377 台有 `system_info` 的主机中约 210 台可解析出架构，  
 > 其余按 `amd64` 计。
 
 ### 操作系统（表 4）
 
-操作系统名取自 `system_info` 的 `os_name`；取不到时该列显示「—」（主机侧未启用 categraf 的
-`input.system` 插件，属数据缺口，非程序缺陷）。展示时做两处归一，避免同一类系统在报告中
+操作系统名取自 `system_info` 的 `os_name`；取不到时该列显示「—」（主机侧未启用 categraf 的  
+`input.system` 插件，属数据缺口，非程序缺陷）。展示时做两处归一，避免同一类系统在报告中  
 出现多种写法、影响分组统计：
 
-| 规则 | 处理前 | 处理后 |
-|---|---|---|
+| 规则                           | 处理前                                      | 处理后                            |
+| ---------------------------- | ---------------------------------------- | ------------------------------ |
 | 去掉 Windows 的厂商前缀「Microsoft 」 | `Microsoft Windows Server 2016 Standard` | `Windows Server 2016 Standard` |
-| 麒麟版本号首字母大写归一 | `Kylin v10` / `Kylin V10` | `Kylin V10` |
+| 麒麟版本号首字母大写归一                 | `Kylin v10` / `Kylin V10`                | `Kylin V10`                    |
 
-前缀匹配不区分大小写、容忍多个空格，且只匹配「Microsoft + 空白」，形近的名称不会被误伤。
-另有两类系统**不拼接版本号**：Windows（`os_version` 是 NT 版本号，如 `10.0.14393 Build 14393`，
+前缀匹配不区分大小写、容忍多个空格，且只匹配「Microsoft + 空白」，形近的名称不会被误伤。  
+另有两类系统**不拼接版本号**：Windows（`os_version` 是 NT 版本号，如 `10.0.14393 Build 14393`，  
 对运维无参考价值）与麒麟（`categraf` 不上报 `os_version`，改从内核串的 `ky<N>` 标记推导大版本）。
 
 ## 全部主机清单导出（核对用）
 
-`cmd/report/n9e_allhosts_export_test.go` 会遍历全部数据源、按与报告完全相同的采集与 ident 解析逻辑
+`cmd/report/n9e_allhosts_export_test.go` 会遍历全部数据源、按与报告完全相同的采集与 ident 解析逻辑  
 导出 xlsx，用于人工核对。列与报告表 4 对齐并附加核对列：
 
-| 列 | 说明 |
-|---|---|
-| 数据源ID / 数据源名称 | 主机所属数据源（报告按单一数据源生成，导出清单跨源汇总） |
-| IP 地址 / 主机角色 | 同报告表 4 |
-| CPU规格 / **CPU架构** / 内存容量 / 磁盘容量 / 操作系统 | 同报告表 4（CPU 架构见上节说明） |
-| **agent版本（核对用）** | categraf 自身指标 `categraf_info` 的 `version` 标签，形如 `v0.4.36-<commit sha>`；可据此排查哪些主机 agent 版本落后 |
-| ident（核对用） | 原始 `ident`，用于核对分段解析结果 |
+| 列                                      | 说明                                                                                          |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 数据源ID / 数据源名称                          | 主机所属数据源（报告按单一数据源生成，导出清单跨源汇总）                                                                |
+| IP 地址 / 主机角色                           | 同报告表 4                                                                                      |
+| CPU规格 / **CPU架构** / 内存容量 / 磁盘容量 / 操作系统 | 同报告表 4（CPU 架构见上节说明）                                                                         |
+| **agent版本（核对用）**                       | categraf 自身指标 `categraf_info` 的 `version` 标签，形如 `v0.4.36-<commit sha>`；可据此排查哪些主机 agent 版本落后 |
+| ident（核对用）                             | 原始 `ident`，用于核对分段解析结果                                                                       |
 
 ```bash
 go test ./cmd/report/ -run TestExportAllHostsToExcel -v -timeout 60m -count=1 \
   -args -n9e_base=https://<n9e 地址> -insecure -out=输出/全部主机清单.xlsx
 ```
 
-**必须加 `-count=1`**：Go 默认复用上一次的成功结果，不加会直接读缓存而不联网。
-可用 `-only-ds=28,56` 只跑指定数据源。自检项中「非法 IP」「工程师被误推断」「CPU 架构为空」
-会判失败（架构无法判定时按 `amd64` 兜底，故该列恒有值，为空即兜底失效）；
+**必须加 `-count=1`**：Go 默认复用上一次的成功结果，不加会直接读缓存而不联网。  
+可用 `-only-ds=28,56` 只跑指定数据源。自检项中「非法 IP」「工程师被误推断」「CPU 架构为空」  
+会判失败（架构无法判定时按 `amd64` 兜底，故该列恒有值，为空即兜底失效）；  
 其余（角色缺失 / 核数缺失 / 磁盘容量缺失 / agent 版本缺失）只记录不判失败。
 
 ## 排版约定
 
-| 项 | 规则 |
-|---|---|
-| 页眉 | `<页眉文字>-<版本号>`，如 `统筹运维项目-0.1.6`（页眉文字由 `-report_header` 控制） |
+| 项    | 规则                                                              |
+| ---- | --------------------------------------------------------------- |
+| 页眉   | `<页眉文字>-<版本号>`，如 `统筹运维项目-0.1.6`（页眉文字由 `-report_header` 控制）      |
 | 表格对齐 | 除「风险研判与优化建议」与「后续工作重点」两节外，所有表格单元格**居中**；这两节的描述/建议列为长文本，保留**左对齐** |
-| 表号 | 按「在文档中出现的先后」自动递增，章节有无（业务巡检、WAF 数据缺失）不会导致跳号或重号 |
-| 图号 | 资源水位分析为图 1~5，WAF 攻击类型饼图为图 6 |
+| 表号   | 按「在文档中出现的先后」自动递增，章节有无（业务巡检、WAF 数据缺失）不会导致跳号或重号                   |
+| 图号   | 资源水位分析为图 1~5，WAF 攻击类型饼图为图 6                                     |
 
 ## CI/CD：版本发布与 Docker 镜像分发
 
@@ -529,16 +530,16 @@ git push origin v0.2.0     # 触发构建，几分钟后镜像即可在 Docker H
 
 **首次使用前配置**（仓库 Settings → Secrets and variables → Actions）：
 
-| Secret | 说明 |
-|---|---|
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
-| `DOCKERHUB_TOKEN` | Docker Hub Access Token（Docker Hub → Account Settings → Security 中创建，非登录密码） |
+| Secret               | 说明                                                                          |
+| -------------------- | --------------------------------------------------------------------------- |
+| `DOCKERHUB_USERNAME` | Docker Hub 用户名                                                              |
+| `DOCKERHUB_TOKEN`    | Docker Hub Access Token（Docker Hub → Account Settings → Security 中创建，非登录密码） |
 
 ## 与原脚本的差异说明
 
 - **Excel 数据源未迁移**：原巡检周报脚本的 Excel 兼容模式已移除（docker 场景固定走 n9e + WAF 数据库），如需恢复可后续补充
 - 第 5 章「业务巡检」按原设计留空人工填写（默认不添加）；原脚本中未启用的「业务可用性自动分析」未迁移
-- **磁盘容量改为全部本地挂载点之和**（原脚本与早期 Go 版只取单个分区），使用率同步改为按容量加权；
+- **磁盘容量改为全部本地挂载点之和**（原脚本与早期 Go 版只取单个分区），使用率同步改为按容量加权；  
   详见上文「磁盘容量与使用率的统计口径」
 - WAF 访问地域 / 攻击时间等字段做了可读化格式（时间戳转日期时间）
 - 单项 WAF 查询失败不会中断整份报告，会在对应章节注明原因并在日志中记录
