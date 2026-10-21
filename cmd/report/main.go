@@ -496,6 +496,27 @@ func runOnce(cfg *Config, ws, we time.Time) {
 		}
 	}
 
+	// ---- 业务巡检数据（-report_include_biz 打开才采集；无数据时章节留空）----
+	var biz *BizData
+	if cfg.IncludeBiz {
+		switch {
+		case cfg.Demo:
+			biz = demoBiz()
+		case cfg.Base == "":
+			log.Warnf("未配置 n9e / 时序库地址，业务巡检章节将留空。")
+		default:
+			bizDS := cfg.BizDS
+			if bizDS == "" {
+				bizDS = cfg.DS
+			}
+			cli := newN9EClient(cfg, bizDS, 300*time.Second)
+			biz = CollectBiz(cli, ws.Unix(), we.Unix(), cfg.Step)
+			if !biz.HasData() {
+				log.Warnf("业务巡检：数据源 #%s 未采集到应用探活与中间件指标，章节留空。", bizDS)
+			}
+		}
+	}
+
 	// ---- WAF 巡检数据（safeline 数据库）----
 	var waf *WafData
 	wafNote := ""
@@ -505,7 +526,7 @@ func runOnce(cfg *Config, ws, we time.Time) {
 		waf, wafNote = collectWaf(cfg, ws, we)
 	}
 
-	if len(rows) == 0 && waf == nil {
+	if len(rows) == 0 && waf == nil && !biz.HasData() {
 		log.Warnf("本周期（%s ~ %s）无可用数据（未采集到主机且未配置 WAF 数据库），跳过。",
 			ws.Format("2006-01-02"), we.Format("2006-01-02"))
 		return
@@ -520,7 +541,7 @@ func runOnce(cfg *Config, ws, we time.Time) {
 
 	// ---- 拆分 / 生成 ----
 	path, err := BuildReport(&BuildInput{
-		Cfg: cfg, Rows: rows, Waf: waf, WafNote: wafNote, WS: ws, WE: we,
+		Cfg: cfg, Rows: rows, Biz: biz, Waf: waf, WafNote: wafNote, WS: ws, WE: we,
 	})
 	if err != nil {
 		log.Errorf("生成报告失败：%v", err)

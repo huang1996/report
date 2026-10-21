@@ -39,9 +39,10 @@ type Config struct {
 	Split         string // none / project / section
 	ChartTop      int
 	Dump          bool
-	Demo          bool // 内置样例数据，用于本地验证
-	IncludeBiz    bool // 是否包含「业务巡检」章节（默认不添加）
-	FakeWhenEmpty bool // 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标
+	Demo          bool   // 内置样例数据，用于本地验证
+	IncludeBiz    bool   // 是否包含「业务巡检」章节（默认不添加）
+	BizDS         string // 业务巡检专用数据源ID（留空则与 DS 相同）
+	FakeWhenEmpty bool   // 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标
 
 	// WAF（safeline）数据源
 	DatabaseURL  string
@@ -196,6 +197,7 @@ func parseConfig() *Config {
 	c.HeaderText = env("REPORT_HEADER", "统筹运维项目")
 	c.LogLevel = env("LOG_LEVEL", "INFO")
 	c.IncludeBiz = envBool("REPORT_INCLUDE_BIZ", false)
+	c.BizDS = env("BIZ_DS_ID", "")
 	c.FakeWhenEmpty = envBool("REPORT_FAKE_WHEN_EMPTY", false)
 	c.RunWeekdays = parseWeekdays(os.Getenv("REPORT_RUN_WEEKDAYS"))
 
@@ -239,7 +241,8 @@ func parseConfig() *Config {
 	f.StringVar(&c.WebdavHost, "webdav_hostname", c.WebdavHost, "WebDAV 上传地址（不配则只存本地）")
 	f.StringVar(&c.WebdavLogin, "webdav_login", c.WebdavLogin, "WebDAV 账号")
 	f.StringVar(&c.WebdavPass, "webdav_password", c.WebdavPass, "WebDAV 密码")
-	f.BoolVar(&c.IncludeBiz, "report_include_biz", c.IncludeBiz, "是否包含「业务巡检」章节（默认不添加）")
+	f.BoolVar(&c.IncludeBiz, "report_include_biz", c.IncludeBiz, "是否包含「业务巡检」章节（默认不添加；打开后无探活且无中间件数据则章节留空）")
+	f.StringVar(&c.BizDS, "biz_ds_id", c.BizDS, "业务巡检专用数据源ID（默认与 -n9e_ds_id 相同；业务指标通常在独立数据源）")
 	f.BoolVar(&c.FakeWhenEmpty, "fake_when_empty", c.FakeWhenEmpty, "统计周期内 n9e 无数据时，按该数据源最新数据随机增减伪造资源巡检指标（仅 n9e 部分，WAF 章节不受影响）")
 	var runWeekdays string
 	f.StringVar(&runWeekdays, "report_run_weekdays", strings.Join(intsStr(c.RunWeekdays), ","), "定时模式下允许生成的星期（0=周日...6=周六，逗号分隔；留空则每天生成）")

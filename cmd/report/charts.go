@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
@@ -830,4 +831,423 @@ func angleIn(ang, a0, a1 float64) bool {
 		ang += 2 * math.Pi
 	}
 	return ang <= a1
+}
+
+// fillAlpha 面积填充的透明度：太低看不出色块，太高会盖住下层序列与网格
+const fillAlpha = 0.35
+
+// LineSeries 折线序列（X 为时间戳秒，Y 为数值）
+type LineSeries struct {
+	Name  string
+	Color string
+	Xs    []float64
+	Ys    []float64
+	Axis  int  // 0 = 左轴（默认），1 = 右轴（量纲与左轴不同时使用）
+	Fill  bool // 是否填充曲线与基线之间的区域
+}
+
+// LineChartOpts 折线图绘制选项
+type LineChartOpts struct {
+	WarnLine    float64 // 阈值线数值，0 表示不画
+	WarnText    string
+	WarnAxis    int     // 阈值线所在轴：0 左轴 / 1 右轴
+	YLabel      string  // 左轴单位
+	YLabelRight string  // 右轴单位，空表示单轴
+	YMax        float64 // 左轴上限，0 = 自动
+	YMaxRight   float64 // 右轴上限，0 = 自动
+	Stacked     bool    // 左轴序列按顺序堆叠并填充（分项合计，如各库事务提交速率）
+}
+
+// niceCeil 取整齐的坐标上限（1/1.2/1.5/2/2.5/3/4/5/6/8 × 10^n），避免出现 37.4 这类刻度
+func niceCeil(v float64) float64 {
+	if v <= 0 {
+		return 10
+	}
+	mag := math.Pow(10, math.Floor(math.Log10(v)))
+	for _, f := range []float64{1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10} {
+		if v <= f*mag+1e-9 {
+			return f * mag
+		}
+	}
+	return 10 * mag
+}
+
+// niceStep 取整齐的刻度步长（1/1.5/2/2.5/3/4/5/6/8 × 10^n）
+func niceStep(v float64) float64 {
+	if v <= 0 {
+		return 1
+	}
+	mag := math.Pow(10, math.Floor(math.Log10(v)))
+	for _, f := range []float64{1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10} {
+		if v <= f*mag+1e-9 {
+			return f * mag
+		}
+	}
+	return 10 * mag
+}
+
+// niceScale 返回整齐的坐标上限与刻度步长（5 格）。
+// 先留 60% 余量再取整，让峰值落在 60% 高度附近：既不会贴着顶边，
+// 也不会像「峰值 12 配上限 15 = 80%」那样与 80% 关注线完全重合、两条线叠成一条。
+func niceScale(max float64) (top, step float64) {
+	if max <= 0 {
+		return 10, 2
+	}
+	step = niceStep(max * 1.6 / 5)
+	return step * 5, step
+}
+
+// fmtTick 按步长决定刻度标签的小数位，避免 2.5 被显示成 2 或 3
+func fmtTick(v, step float64) string {
+	near := func(x, y float64) bool { return math.Abs(x-y) < 1e-9 }
+	switch {
+	case near(step, math.Round(step)):
+		return sprintf("%.0f", v)
+	case near(step*10, math.Round(step*10)):
+		return sprintf("%.1f", v)
+	case near(step*100, math.Round(step*100)):
+		return sprintf("%.2f", v)
+	}
+	return sprintf("%.3f", v)
+}
+
+// blendPixel 把颜色按 alpha 叠加到既有像素上（真正的透明合成，而非直接覆盖）。
+// 堆叠填充时下层颜色能透出来，重叠区域自然加深，不会互相盖死。
+func blendPixel(img *image.RGBA, x, y int, c color.RGBA, alpha float64) {
+	if x < 0 || y < 0 || x >= img.Bounds().Max.X || y >= img.Bounds().Max.Y {
+		return
+	}
+	r, g, b, _ := img.At(x, y).RGBA()
+	mix := func(dst uint32, src uint8) uint8 {
+		return uint8(float64(src)*alpha + float64(dst>>8)*(1-alpha) + 0.5)
+	}
+	img.Set(x, y, color.RGBA{mix(r, c.R), mix(g, c.G), mix(b, c.B), 255})
+}
+
+// interpAt 折线分段线性插值：第 i 段内比例 t
+func interpAt(ys []float64, i int, t float64) float64 {
+	if len(ys) == 0 {
+		return 0
+	}
+	if i >= len(ys)-1 {
+		return ys[len(ys)-1]
+	}
+	if i < 0 {
+		return ys[0]
+	}
+	return ys[i] + (ys[i+1]-ys[i])*t
+}
+
+// fillBand 在两条折线之间逐像素列填充；lo 为 nil 时以基线 0 为下界
+func fillBand(img *image.RGBA, xs, lo, hi []float64, xOf, yOf func(float64) int, c color.RGBA, alpha float64) {
+	n := len(xs)
+	if n < 2 || len(hi) == 0 {
+		return
+	}
+	bnd := img.Bounds()
+	base := yOf(0)
+	for i := 0; i < n-1; i++ {
+		x0, x1 := xOf(xs[i]), xOf(xs[i+1])
+		if x0 == x1 {
+			continue
+		}
+		leftCol, rightCol := x0, x1
+		if leftCol > rightCol {
+			leftCol, rightCol = rightCol, leftCol
+		}
+		for x := leftCol; x < rightCol; x++ {
+			t := 0.0
+			if x1 != x0 {
+				t = float64(x-x0) / float64(x1-x0)
+			}
+			yHi := yOf(interpAt(hi, i, t))
+			yLo := base
+			if lo != nil {
+				yLo = yOf(interpAt(lo, i, t))
+			}
+			if yLo < yHi {
+				yLo, yHi = yHi, yLo
+			}
+			if yHi < bnd.Min.Y {
+				yHi = bnd.Min.Y
+			}
+			if yLo >= bnd.Max.Y {
+				yLo = bnd.Max.Y - 1
+			}
+			for y := yHi; y <= yLo; y++ {
+				blendPixel(img, x, y, c, alpha)
+			}
+		}
+	}
+}
+
+// DrawLineChart 时间序列折线图：横轴时间、纵轴数值，按采样点直接连线（不做平滑）。
+// 支持双纵轴（Axis=1 走右轴）、面积填充（Fill）与堆叠填充（Stacked）。
+func DrawLineChart(title string, series []LineSeries, o LineChartOpts) image.Image {
+	const S = 2
+	const W, H = 1960 * S, 780 * S
+	left, right, top, bottom := 115*S, 55*S, 95*S, 115*S
+
+	hasRight := o.YLabelRight != ""
+	for _, sr := range series {
+		if sr.Axis == 1 {
+			hasRight = true
+		}
+	}
+	if hasRight {
+		right = 175 * S // 给右轴刻度与单位让位
+	}
+
+	oldStroke := strokeW
+	strokeW = S
+	defer func() { strokeW = oldStroke }()
+
+	img := image.NewRGBA(image.Rect(0, 0, W, H))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	plotW := W - left - right
+	plotH := H - top - bottom
+
+	xmin, xmax := math.Inf(1), math.Inf(-1)
+	for _, sr := range series {
+		for i := range sr.Xs {
+			if i >= len(sr.Ys) {
+				break
+			}
+			if sr.Xs[i] < xmin {
+				xmin = sr.Xs[i]
+			}
+			if sr.Xs[i] > xmax {
+				xmax = sr.Xs[i]
+			}
+		}
+	}
+	if math.IsInf(xmin, 1) || xmax <= xmin {
+		return img
+	}
+
+	// ---- 各轴量程 ----
+	leftMax, rightMax := 0.0, 0.0
+	if o.Stacked && len(series) > 0 {
+		n := 0
+		for _, sr := range series {
+			if len(sr.Ys) > n {
+				n = len(sr.Ys)
+			}
+		}
+		cum := make([]float64, n)
+		for _, sr := range series {
+			for i := 0; i < n; i++ {
+				if i < len(sr.Ys) {
+					cum[i] += sr.Ys[i]
+				}
+				if cum[i] > leftMax {
+					leftMax = cum[i]
+				}
+			}
+		}
+	} else {
+		for _, sr := range series {
+			for _, v := range sr.Ys {
+				if sr.Axis == 1 {
+					if v > rightMax {
+						rightMax = v
+					}
+				} else if v > leftMax {
+					leftMax = v
+				}
+			}
+		}
+	}
+	// 自动量程：让峰值落在约 70% 高度（留 30% 余量）。
+	// 若只留 15%，峰值容易正好压在某个整刻度上——例如 12 与上限 15 恰好是 80%，
+	// 会与「80% 关注线」完全重合，两条线叠在一起看不出区别。
+	ymaxL, ymaxR := o.YMax, o.YMaxRight
+	stepL := ymaxL / 5
+	if ymaxL <= 0 {
+		ymaxL, stepL = niceScale(leftMax)
+	}
+	stepR := ymaxR / 5
+	if hasRight && ymaxR <= 0 {
+		ymaxR, stepR = niceScale(rightMax)
+	}
+
+	xOf := func(x float64) int { return left + int((x-xmin)/(xmax-xmin)*float64(plotW)) }
+	yOf := func(v float64, axis int) int {
+		max := ymaxL
+		if axis == 1 && ymaxR > 0 {
+			max = ymaxR
+		}
+		if v < 0 {
+			v = 0
+		}
+		if v > max {
+			v = max
+		}
+		return top + plotH - int(v/max*float64(plotH))
+	}
+
+	// ---- 填充与曲线：填充先画，曲线压在上面 ----
+	drawYs := make([][]float64, len(series))
+	if o.Stacked && len(series) > 0 {
+		n := 0
+		for _, sr := range series {
+			if len(sr.Ys) > n {
+				n = len(sr.Ys)
+			}
+		}
+		cum := make([]float64, n)
+		for si, sr := range series {
+			topYs := make([]float64, n)
+			for i := 0; i < n; i++ {
+				if i < len(sr.Ys) {
+					topYs[i] = cum[i] + sr.Ys[i]
+				} else {
+					topYs[i] = cum[i]
+				}
+			}
+			drawYs[si] = topYs
+			cum = topYs
+		}
+		prev := make([]float64, n)
+		for si, sr := range series {
+			hi := drawYs[si]
+			fillBand(img, sr.Xs, prev, hi, xOf,
+				func(v float64) int { return yOf(v, 0) }, hexColor(sr.Color), fillAlpha)
+			prev = hi
+		}
+	} else {
+		for si, sr := range series {
+			drawYs[si] = sr.Ys
+			if !sr.Fill {
+				continue
+			}
+			ax := sr.Axis
+			fillBand(img, sr.Xs, nil, sr.Ys, xOf,
+				func(v float64) int { return yOf(v, ax) }, hexColor(sr.Color), fillAlpha)
+		}
+	}
+
+	// ---- 网格与双轴刻度 ----
+	grey := hexColor("D0D0D0")
+	txtC := hexColor("404040")
+	for i := 0; i <= 5; i++ {
+		v := stepL * float64(i)
+		y := yOf(v, 0)
+		dotH(img, y, left, W-right, grey)
+		drawText(img, fmtTick(v, stepL), left-10*S, y-10*S, 17*S, txtC, 2)
+		if hasRight && ymaxR > 0 {
+			drawText(img, fmtTick(stepR*float64(i), stepR), W-right+10*S, y-10*S, 17*S, txtC, 0)
+		}
+	}
+	axisC := hexColor("909090")
+	hline(img, top+plotH, left, W-right, axisC)
+	vline(img, left, top, top+plotH, axisC)
+	if hasRight {
+		vline(img, W-right, top, top+plotH, axisC)
+	}
+
+	for si, sr := range series {
+		ys := drawYs[si]
+		n := len(sr.Xs)
+		if n > len(ys) {
+			n = len(ys)
+		}
+		if n == 0 {
+			continue
+		}
+		stepIdx := 1
+		if n > 600 {
+			stepIdx = n/600 + 1
+		}
+		idx := make([]int, 0, n/stepIdx+2)
+		for i := 0; i < n; i += stepIdx {
+			idx = append(idx, i)
+		}
+		if idx[len(idx)-1] != n-1 {
+			idx = append(idx, n-1)
+		}
+		ax := sr.Axis
+		pts := make([][2]int, len(idx))
+		for k, i := range idx {
+			pts[k] = [2]int{xOf(sr.Xs[i]), yOf(ys[i], ax)}
+		}
+		strokePolyline(img, pts, hexColor(sr.Color), 2*S)
+	}
+
+	// ---- 阈值线 ----
+	if o.WarnLine > 0 {
+		yw := yOf(o.WarnLine, o.WarnAxis)
+		if yw > top && yw < top+plotH {
+			red := hexColor("C00000")
+			dashH(img, yw, left, W-right, red)
+			tx := W - right - textWidth(o.WarnText, 17*S) - 8*S
+			drawText(img, o.WarnText, tx, yw-24*S, 17*S, red, 0)
+		}
+	}
+
+	// ---- 横轴时间刻度（6 个）----
+	span := xmax - xmin
+	for i := 0; i <= 6; i++ {
+		x := xmin + span*float64(i)/6
+		lb := time.Unix(int64(x), 0).Format("01-02 15:04")
+		drawText(img, lb, xOf(x), top+plotH+12*S, 17*S, txtC, 1)
+	}
+
+	// ---- 标题 / 图例 / 单位 ----
+	navy := hexColor("1F3864")
+	drawText(img, title, W/2, 22*S, 25*S, navy, 1)
+	lx := left + 10*S
+	for _, sr := range series {
+		fillRect(img, lx, 62*S, lx+16*S, 78*S, hexColor(sr.Color))
+		drawText(img, sr.Name, lx+24*S, 60*S, 19*S, txtC, 0)
+		lx += 24*S + textWidth(sr.Name, 19*S) + 30*S
+	}
+	unit := ""
+	if o.YLabel != "" {
+		unit = "单位：" + o.YLabel
+	}
+	if o.YLabelRight != "" {
+		if unit != "" {
+			unit += " ／ 右轴：" + o.YLabelRight
+		} else {
+			unit = "右轴单位：" + o.YLabelRight
+		}
+	}
+	if unit != "" {
+		drawText(img, unit, W-right-6*S, 74*S, 17*S, hexColor("808080"), 2)
+	}
+	return img
+}
+
+// strokePolyline 沿折线描边，width 为线宽（像素）。
+// 数据曲线一律实线——虚线与阈值线（dashH 绘制的关注线）在浅色填充上容易混为一谈。
+func strokePolyline(img *image.RGBA, pts [][2]int, c color.RGBA, width int) {
+	for i := 0; i < len(pts)-1; i++ {
+		x0, y0 := pts[i][0], pts[i][1]
+		x1, y1 := pts[i+1][0], pts[i+1][1]
+		dx, dy := x1-x0, y1-y0
+		n := dx
+		if n < 0 {
+			n = -n
+		}
+		if ay := dy; ay < 0 {
+			if -ay > n {
+				n = -ay
+			}
+		} else if ay > n {
+			n = ay
+		}
+		if n == 0 {
+			continue
+		}
+		for k := 0; k <= n; k++ {
+			x := x0 + dx*k/n
+			y := y0 + dy*k/n
+			for sx := 0; sx < width; sx++ {
+				for sy := 0; sy < width; sy++ {
+					img.Set(x+sx, y+sy, c)
+				}
+			}
+		}
+	}
 }
