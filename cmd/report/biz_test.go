@@ -378,3 +378,146 @@ func TestBizConclusionAllNormal(t *testing.T) {
 		t.Errorf("全部正常时应给出正向结论，实得：%s", text)
 	}
 }
+
+// bizCertDemo 生成「只有探活数据」的业务数据，状态按真实规则推导
+func bizCertDemo(probes []BizProbe) *BizData {
+	b := &BizData{Probes: probes}
+	for i := range b.Probes {
+		b.Probes[i].Status = bizProbeStatus(b.Probes[i])
+	}
+	b.Findings = bizFindings(b)
+	return b
+}
+
+// TestBizProbeCertStatus 证书剩余有效期判定：＜30 天关注、已过期告警、无证书信息不影响状态
+func TestBizProbeCertStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		p    BizProbe
+		want string
+	}{
+		{"无证书信息", BizProbe{Avail: 100, Avg: 30}, bizNormal},
+		{"剩余 186 天", BizProbe{Avail: 100, Avg: 30, CertExpire: 1, CertDays: 186}, bizNormal},
+		{"剩余 30 天", BizProbe{Avail: 100, Avg: 30, CertExpire: 1, CertDays: 30}, bizNormal},
+		{"剩余 13 天", BizProbe{Avail: 100, Avg: 30, CertExpire: 1, CertDays: 13}, bizWarn},
+		{"当日到期", BizProbe{Avail: 100, Avg: 30, CertExpire: 1, CertDays: 0}, bizWarn},
+		{"已过期", BizProbe{Avail: 100, Avg: 30, CertExpire: 1, CertDays: -2}, bizAlert},
+		{"响应异常叠加证书临期", BizProbe{Avail: 98, Avg: 30, CertExpire: 1, CertDays: 13}, bizAlert},
+	}
+	for _, c := range cases {
+		if got := bizProbeStatus(c.p); got != c.want {
+			t.Errorf("%s：状态 = %q，期望 %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBizCertText 证书到期列文案：默认只给日期，临期补剩余天数，过期标明
+func TestBizCertText(t *testing.T) {
+	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.Local).Unix()
+	cases := []struct {
+		name string
+		p    BizProbe
+		want string
+	}{
+		{"无证书", BizProbe{}, "—"},
+		{"余量充足", BizProbe{CertExpire: day, CertDays: 186}, "2026-11-03"},
+		{"临期", BizProbe{CertExpire: day, CertDays: 12}, "2026-11-03（12 天）"},
+		{"已过期", BizProbe{CertExpire: day, CertDays: -1}, "2026-11-03（已过期）"},
+	}
+	for _, c := range cases {
+		if got := bizCertText(c.p); got != c.want {
+			t.Errorf("%s：证书列文案 = %q，期望 %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBizProbeCertColumn 有证书数据时增加「证书到期」列，临期单元格按「关注」色着色
+func TestBizProbeCertColumn(t *testing.T) {
+	cert := time.Now().AddDate(0, 0, 12)
+	b := bizCertDemo([]BizProbe{
+		{System: "天空地森林防火", Name: "门户网站", Addr: "https://www.a.gov.cn/portal", Avail: 100, Avg: 20, Max: 60, Std: 4,
+			CertExpire: cert.Unix(), CertDays: 12},
+		{System: "天空地森林防火", Name: "内网接口", Addr: "http://10.0.0.2:8080/api", Avail: 100, Avg: 10, Max: 30, Std: 2},
+	})
+	out := buildBizDocx(t, b, true)
+	text := docText(t, out)
+	if !strings.Contains(text, "证书到期") {
+		t.Error("有证书数据时应渲染「证书到期」列")
+	}
+	if !strings.Contains(text, cert.Format("2006-01-02")) {
+		t.Errorf("证书到期列缺少到期日 %s，实得：\n%s", cert.Format("2006-01-02"), text)
+	}
+	if !strings.Contains(text, "（12 天）") {
+		t.Error("剩余有效期 ＜30 天时应给出天数提示")
+	}
+	if !strings.Contains(text, bizWarn) {
+		t.Error("证书临期目标的状态应降为关注")
+	}
+	// 临期单元格本身要着色（statusColor[关注] = C55A11）
+	doc := docxPart(t, out, "word/document.xml")
+	idx := strings.Index(doc, "（12 天）")
+	if idx < 0 {
+		t.Fatal("文档中未找到证书临期单元格")
+	}
+	from := idx - 600
+	if from < 0 {
+		from = 0
+	}
+	if !strings.Contains(doc[from:idx], "C55A11") {
+		t.Error("证书临期单元格未着色提示")
+	}
+}
+
+// TestBizProbeCertColumnHidden 所有目标都没有证书时间时，该列不出现
+func TestBizProbeCertColumnHidden(t *testing.T) {
+	b := bizCertDemo([]BizProbe{
+		{System: "A", Name: "接口1", Addr: "http://10.0.0.1:80", Avail: 100, Avg: 12, Max: 40, Std: 3},
+		{System: "A", Name: "接口2", Addr: "http://10.0.0.2:80", Avail: 100, Avg: 15, Max: 45, Std: 3},
+	})
+	text := docText(t, buildBizDocx(t, b, true))
+	if strings.Contains(text, "证书到期") {
+		t.Error("所有目标均无证书时间时不应渲染「证书到期」列")
+	}
+	if strings.Contains(text, "剩余有效期") {
+		t.Error("无证书数据时判断标准不应提及证书")
+	}
+}
+
+// TestBizFindingsCert 证书临期 / 过期各自成为一条独立发现，并带续签建议
+func TestBizFindingsCert(t *testing.T) {
+	cert := time.Now().AddDate(0, 0, 9)
+	warn := bizCertDemo([]BizProbe{{System: "A", Name: "门户", Addr: "https://a.gov.cn", Avail: 100, Avg: 20,
+		CertExpire: cert.Unix(), CertDays: 9}})
+	fs := bizFindings(warn)
+	if len(fs) != 1 {
+		t.Fatalf("证书临期应产出 1 条发现（响应指标正常），实得 %d 条：%+v", len(fs), fs)
+	}
+	if fs[0].Level != bizWarn || !strings.Contains(fs[0].Desc, "证书即将到期") {
+		t.Errorf("临期发现内容不符：%+v", fs[0])
+	}
+	if !strings.Contains(fs[0].Basis, "剩余 9 天") || !strings.Contains(fs[0].Advice, "续签") {
+		t.Errorf("临期发现缺少剩余天数或续签建议：%+v", fs[0])
+	}
+
+	expired := bizCertDemo([]BizProbe{{System: "A", Name: "门户", Addr: "https://a.gov.cn", Avail: 100, Avg: 20,
+		CertExpire: cert.Unix(), CertDays: -3}})
+	fe := bizFindings(expired)
+	if len(fe) != 1 || fe[0].Level != bizAlert || !strings.Contains(fe[0].Desc, "已过期") {
+		t.Fatalf("过期证书应为告警级发现，实得 %+v", fe)
+	}
+}
+
+// TestBizConclusionCert 总体结论要点带上证书临期摘要
+func TestBizConclusionCert(t *testing.T) {
+	b := bizCertDemo([]BizProbe{
+		{System: "A", Name: "门户", Addr: "https://a.gov.cn", Avail: 100, Avg: 20, CertExpire: 1, CertDays: 12},
+		{System: "A", Name: "接口", Addr: "http://10.0.0.2:80", Avail: 100, Avg: 10},
+	})
+	text, level := bizConclusion(b)
+	if !strings.Contains(text, "证书 30 天内到期") || !strings.Contains(text, "最紧剩余 12 天") {
+		t.Errorf("总体结论缺少证书临期摘要，实得：%s", text)
+	}
+	if level != bizWarn {
+		t.Errorf("证书临期时汇总状态应为关注，实得 %q", level)
+	}
+}
