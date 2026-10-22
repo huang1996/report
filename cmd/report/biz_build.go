@@ -181,38 +181,86 @@ func buildBizChapter(d *Docx, b *BizData, ch int, tn *tableNo, figNo int) int {
 	if len(b.Probes) > 0 {
 		h2(nextSec(), "应用探活")
 		p0 := b.Probes[0]
+		slowest := b.Probes[0]
 		minAvg, maxAvg := p0.Avg, p0.Avg
 		availSum := 0.0
+		hasCert := false
+		certWarn := 0
 		for _, p := range b.Probes {
 			if p.Avg < minAvg {
 				minAvg = p.Avg
 			}
 			if p.Avg > maxAvg {
 				maxAvg = p.Avg
+				slowest = p
 			}
 			availSum += p.Avail
+			if p.CertExpire > 0 {
+				hasCert = true
+			}
+			if bizProbeCertStatus(p) != bizNormal {
+				certWarn++
+			}
 		}
-		d.Body(sprintf("报告周期内 %d 个探活目标整体可用率 %.2f%%，平均响应时间 %.1f ~ %.1f ms，"+
+		intro := sprintf("报告周期内 %d 个探活目标整体可用率 %.2f%%，平均响应时间 %.1f ~ %.1f ms，"+
 			"响应标准差均处于合理区间；最慢目标为 %s。",
-			len(b.Probes), availSum/float64(len(b.Probes)), minAvg, maxAvg, p0.Name))
+			len(b.Probes), availSum/float64(len(b.Probes)), minAvg, maxAvg, slowest.Name)
+		if hasCert {
+			if certWarn > 0 {
+				intro += sprintf("其中 %d 个目标配置了 HTTPS 证书，%d 个剩余有效期不足 %d 天，需尽快安排续签。",
+					certCount(b.Probes), certWarn, bizCertWarnDays)
+			} else {
+				intro += sprintf("其中 %d 个目标配置了 HTTPS 证书，均未临近到期。", certCount(b.Probes))
+			}
+		}
+		d.Body(intro)
 
+		headers := []string{"业务 / 用途", "服务地址", "可用率", "平均响应（ms）", "最大响应（ms）", "响应标准差（ms）"}
+		widths := []float64{4.4, 2.9, 1.8, 2.1, 2.1, 2.1}
+		if hasCert {
+			// 多一列「证书到期」，各列等比让出宽度，整表仍为页面可用宽度
+			headers = append(headers, "证书到期")
+			widths = []float64{3.5, 2.3, 1.5, 1.9, 1.9, 2.0, 2.3}
+		}
+		headers = append(headers, "状态")
+		widths = append(widths, 1.2)
+
+		certCol := -1
+		if hasCert {
+			certCol = len(headers) - 2
+		}
 		var rows [][]string
-		for _, p := range b.Probes {
-			rows = append(rows, []string{
+		cellColors := map[int]map[int]string{}
+		for ri, p := range b.Probes {
+			row := []string{
 				sprintf("%s-%s", p.System, p.Name),
 				bizAddr(p.Addr),
 				sprintf("%.2f%%", p.Avail),
 				sprintf("%.1f", p.Avg),
 				sprintf("%.0f", p.Max),
 				sprintf("%.1f", p.Std),
-				p.Status,
-			})
+			}
+			if hasCert {
+				row = append(row, bizCertText(p))
+				// 证书临期 / 过期：单元格单独着色提示（状态列同时降档）
+				if cs := bizProbeCertStatus(p); cs != bizNormal {
+					cellColors[ri] = map[int]string{certCol: statusColor[cs]}
+				}
+			}
+			row = append(row, p.Status)
+			rows = append(rows, row)
 		}
-		d.TableCentered([]string{"业务 / 用途", "服务地址", "可用率", "平均响应（ms）", "最大响应（ms）", "响应标准差（ms）", "状态"},
-			rows, []float64{4.4, 2.9, 1.8, 2.1, 2.1, 2.1, 1.2}, map[int]bool{6: true}, 9, false)
+		if len(cellColors) > 0 {
+			d.SetCellColors(cellColors)
+		}
+		d.TableCentered(headers, rows, widths, map[int]bool{len(headers) - 1: true}, 9, false)
 		d.Caption(sprintf("表 %d　应用探活关键指标", tn.next()))
-		bizNote(d, "判断标准：可用率 ≥ 99.9%、平均响应 ＜ 500 ms、最大响应 ＜ 2000 ms、响应标准差 ＜ 200 ms 为正常；"+
-			"任一指标越线即标为关注，状态取各项中最差的一项。")
+
+		note := "判断标准：可用率 ≥ 99.9%、平均响应 ＜ 500 ms、最大响应 ＜ 2000 ms、响应标准差 ＜ 200 ms 为正常；"
+		if hasCert {
+			note += sprintf("证书剩余有效期 ＜ %d 天标为关注、已过期标为告警（http 目标无证书信息，该列显示「—」）；", bizCertWarnDays)
+		}
+		d.BodyRuns(Run{Text: note + "任一指标越线即标为关注，状态取各项中最差的一项。", Size: 9, Color: grey})
 
 		if figNo > 0 {
 			var series []LineSeries
@@ -349,12 +397,20 @@ func bizConclusion(b *BizData) (string, string) {
 		normal := 0
 		minAvg, maxAvg := math.Inf(1), 0.0
 		var bad []string
+		var certNames []string
+		minCert := 9999
 		for _, p := range b.Probes {
 			levels = append(levels, p.Status)
 			if p.Status == bizNormal {
 				normal++
 			} else {
 				bad = append(bad, p.Name)
+			}
+			if bizProbeCertStatus(p) != bizNormal {
+				certNames = append(certNames, p.Name)
+				if p.CertDays < minCert {
+					minCert = p.CertDays
+				}
 			}
 			if p.Avg < minAvg {
 				minAvg = p.Avg
@@ -367,8 +423,16 @@ func bizConclusion(b *BizData) (string, string) {
 			segs = append(segs, sprintf("应用探活 %d 个目标全部可用（平均响应 %.1f～%.1f ms）",
 				len(b.Probes), minAvg, maxAvg))
 		} else {
-			segs = append(segs, sprintf("应用探活 %d 个目标中 %d 个可用，异常目标 %s",
+			segs = append(segs, sprintf("应用探活 %d 个目标中 %d 个各项指标正常，需关注 %s",
 				len(b.Probes), normal, bizCutList(bad, 3)))
+		}
+		if len(certNames) > 0 {
+			tail := sprintf("最紧剩余 %d 天", minCert)
+			if minCert < 0 {
+				tail = "已有证书过期"
+			}
+			segs = append(segs, sprintf("%d 个目标 HTTPS 证书 %d 天内到期（%s，%s）",
+				len(certNames), bizCertWarnDays, bizCutList(certNames, 2), tail))
 		}
 	}
 
@@ -460,6 +524,32 @@ func bizAddr(addr string) string {
 		s = s[:i]
 	}
 	return s
+}
+
+// bizCertText 证书到期列：默认只给到期日，临期补剩余天数、过期标明「已过期」作为提示
+func bizCertText(p BizProbe) string {
+	if p.CertExpire <= 0 {
+		return "—"
+	}
+	day := bizCertDate(p.CertExpire)
+	switch {
+	case p.CertDays < 0:
+		return sprintf("%s（已过期）", day)
+	case p.CertDays < bizCertWarnDays:
+		return sprintf("%s（%d 天）", day, p.CertDays)
+	}
+	return day
+}
+
+// certCount 配置了 HTTPS 证书（有到期时间）的探活目标数
+func certCount(ps []BizProbe) int {
+	n := 0
+	for _, p := range ps {
+		if p.CertExpire > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // bizChartColors 折线配色（与资源图表同一套色板）

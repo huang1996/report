@@ -37,10 +37,11 @@ type Docx struct {
 	body        strings.Builder
 	media       [][]byte
 	imgID       int
-	paraStyle   strings.Builder // 复用的段落 XML 片段生成在内部函数
-	forceCenter bool            // Table 期间强制所有单元格居中（不受文本长度影响）
-	centerCols  map[int]bool    // Table 期间强制居中的列（按表头下标）
-	HeaderText  string          // 页眉文字（空则用默认值）
+	paraStyle   strings.Builder        // 复用的段落 XML 片段生成在内部函数
+	forceCenter bool                   // Table 期间强制所有单元格居中（不受文本长度影响）
+	centerCols  map[int]bool           // Table 期间强制居中的列（按表头下标）
+	cellColors  map[int]map[int]string // 表内指定单元格文字颜色（行下标 → 列下标 → 十六进制）
+	HeaderText  string                 // 页眉文字（空则用默认值）
 }
 
 func NewDocx() *Docx {
@@ -179,8 +180,13 @@ func (d *Docx) TableCenterCols(cols map[int]bool, headers []string, rows [][]str
 	d.centerCols = nil
 }
 
+// SetCellColors 为紧随其后的表格指定单元格文字颜色（行下标 → 列下标 → 十六进制色），
+// 下标与传给 Table / TableCentered 的 rows / headers 一致；该表渲染完成后自动清空。
+func (d *Docx) SetCellColors(m map[int]map[int]string) { d.cellColors = m }
+
 // Table 三线表：宽 widthsCm（cm），statusCols 中的列按状态文字着色
 func (d *Docx) Table(headers []string, rows [][]string, widthsCm []float64, statusCols map[int]bool, fontPt float64, hideEmptyCols bool) {
+	defer func() { d.cellColors = nil }()
 	if fontPt <= 0 {
 		fontPt = 9.5
 	}
@@ -281,6 +287,10 @@ func (d *Docx) Table(headers []string, rows [][]string, widthsCm []float64, stat
 					col = c
 					bold = true
 				}
+			}
+			// 单元格级着色优先于状态列规则（如证书临期提示）
+			if c, ok := d.cellColors[ri][ki]; ok {
+				col, bold = c, true
 			}
 			fill := ""
 			if ri%2 == 1 {

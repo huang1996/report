@@ -20,6 +20,9 @@ const (
 	bizNormal = "正常"
 	bizWarn   = "关注"
 	bizAlert  = "告警"
+
+	// bizCertWarnDays 证书剩余有效期阈值：＜30 天标为关注，已过期标为告警
+	bizCertWarnDays = 30
 )
 
 // BizInstance 由 instance 标签拆出的三元组
@@ -107,16 +110,18 @@ type BizPoint struct {
 
 // BizProbe 一个应用探活目标
 type BizProbe struct {
-	System  string
-	Name    string // name-desc
-	Addr    string
-	Avail   float64
-	Avg     float64
-	Max     float64
-	Std     float64
-	Samples int
-	Status  string
-	Points  []BizPoint // 响应时间轨迹，用于折线图（已下采样）
+	System     string
+	Name       string // name-desc
+	Addr       string
+	Avail      float64
+	Avg        float64
+	Max        float64
+	Std        float64
+	Samples    int
+	CertExpire int64 // HTTPS 证书到期时间（Unix 秒），0 = 该目标无证书信息（http / 插件未采集）
+	CertDays   int   // 距报告期末的剩余天数，负值表示已过期
+	Status     string
+	Points     []BizPoint // 响应时间轨迹，用于折线图（已下采样）
 }
 
 // BizFinding 巡检发现
@@ -240,6 +245,14 @@ func fBytes(v float64) string {
 	return sprintf("%.0f B", v)
 }
 func fBytesRate(v float64) string { return fBytes(v) + "/s" }
+
+// bizCertDate 证书到期日（本地时区，只到日）
+func bizCertDate(ts int64) string {
+	if ts <= 0 {
+		return "—"
+	}
+	return time.Unix(ts, 0).Format("2006-01-02")
+}
 
 // ---------------- 状态判定 ----------------
 
@@ -879,6 +892,7 @@ func collectBizProbes(c *N9EClient, start, end int64, step int) []BizProbe {
 		log.Debugf("应用探活数据获取失败：%v", err)
 		return nil
 	}
+	certs := collectBizCerts(c, start, end, step)
 	var out []BizProbe
 	seen := map[string]bool{}
 	for _, s := range series {
@@ -919,6 +933,11 @@ func collectBizProbes(c *N9EClient, start, end int64, step int) []BizProbe {
 		if p.System == "" {
 			p.System = "—"
 		}
+		// 证书到期时间只在 https 目标上有输出；按报告期末算剩余天数，供表格与状态判定使用
+		if ts, ok := certs[target]; ok && ts > 0 {
+			p.CertExpire = ts
+			p.CertDays = int(math.Floor(float64(ts-end) / 86400))
+		}
 
 		rt, err := c.QueryRange(sprintf(`http_response_response_time_ms{target="%s"}`, quoteLabel(target)), start, end, step)
 		if err == nil {
@@ -937,6 +956,32 @@ func collectBizProbes(c *N9EClient, start, end int64, step int) []BizProbe {
 		}
 		return out[i].Avg > out[j].Avg
 	})
+	return out
+}
+
+// collectBizCerts 采集 HTTPS 证书到期时间（categraf http_response 的独立指标，仅 https 目标输出）。
+// 指标不存在（全为 http 目标或插件版本较旧）时返回空表，报告中相应列自动隐藏。
+func collectBizCerts(c *N9EClient, start, end int64, step int) map[string]int64 {
+	out := map[string]int64{}
+	series, err := c.QueryRange("http_response_cert_expire_timestamp", start, end, step)
+	if err != nil {
+		log.Debugf("证书到期时间获取失败：%v", err)
+		return out
+	}
+	for _, s := range series {
+		target := strings.TrimSpace(s.Metric["target"])
+		if target == "" {
+			continue
+		}
+		for _, v := range s.Values { // 取最后一条有效采样
+			if len(v) < 2 {
+				continue
+			}
+			if ts, ok := promValue(v[1]); ok && ts > 0 {
+				out[target] = int64(ts)
+			}
+		}
+	}
 	return out
 }
 
@@ -997,18 +1042,35 @@ func bizStd(series []promSeries) float64 {
 	return math.Sqrt(sum / float64(len(vs)))
 }
 
-// bizProbeStatus 探活状态：可用率、平均响应、最大响应、标准差任一项越线即关注
+// bizProbeStatus 探活状态：可用率、平均响应、最大响应、标准差、证书有效期任一项越线即降档
 func bizProbeStatus(p BizProbe) string {
-	if p.Avail < 99.0 {
-		return bizAlert
+	s := bizNormal
+	switch {
+	case p.Avail < 99.0, p.Max > 5000, p.Avg > 2000:
+		s = bizAlert
+	case p.Avail < 99.9, p.Avg > 500, p.Max > 2000, p.Std > 200:
+		s = bizWarn
 	}
-	if p.Max > 5000 || p.Avg > 2000 {
-		return bizAlert
+	return bizWorst(s, bizProbeCertStatus(p))
+}
+
+// bizProbeCertStatus 证书状态：已过期告警，剩余 ＜30 天关注，无证书信息视为正常
+func bizProbeCertStatus(p BizProbe) string {
+	if p.CertExpire <= 0 {
+		return bizNormal
 	}
-	if p.Avail < 99.9 || p.Avg > 500 || p.Max > 2000 || p.Std > 200 {
+	switch {
+	case p.CertDays < 0:
+		return bizAlert
+	case p.CertDays < bizCertWarnDays:
 		return bizWarn
 	}
 	return bizNormal
+}
+
+// bizProbeRespBad 响应侧指标（不含证书）是否越线
+func bizProbeRespBad(p BizProbe) bool {
+	return p.Avail < 99.9 || p.Avg > 500 || p.Max > 2000 || p.Std > 200
 }
 
 // CollectBiz 采集业务巡检数据；无任何数据时返回空结构（HasData 为 false）
@@ -1084,14 +1146,33 @@ func bizFindings(b *BizData) []BizFinding {
 		}
 	}
 	for _, p := range b.Probes {
-		if p.Status == bizNormal {
+		// 证书问题单独成条：与响应指标分开描述，便于按证书续签流程处置
+		if cs := bizProbeCertStatus(p); cs != bizNormal {
+			desc := sprintf("应用探活 %s（%s）HTTPS 证书即将到期", p.Name, bizAddr(p.Addr))
+			adv := "联系证书管理员在到期前完成续签与部署，并核对证书链是否完整"
+			if p.CertDays < 0 {
+				desc = sprintf("应用探活 %s（%s）HTTPS 证书已过期", p.Name, bizAddr(p.Addr))
+				adv = "立即更换证书并重启服务，确认浏览器与客户端不再出现证书告警"
+			}
+			out = append(out, BizFinding{
+				Desc:   desc,
+				Basis:  sprintf("证书到期 %s，剩余 %d 天", bizCertDate(p.CertExpire), p.CertDays),
+				Advice: adv,
+				Level:  cs,
+			})
+		}
+		if !bizProbeRespBad(p) {
 			continue
+		}
+		lvl := bizWarn
+		if p.Avail < 99.0 || p.Avg > 2000 || p.Max > 5000 {
+			lvl = bizAlert
 		}
 		out = append(out, BizFinding{
 			Desc:   sprintf("应用探活 %s（%s）响应异常", p.Name, p.Addr),
 			Basis:  sprintf("可用率 %.2f%%，平均响应 %.1f ms，最大响应 %.0f ms，标准差 %.1f ms", p.Avail, p.Avg, p.Max, p.Std),
 			Advice: "核查应用服务与网络链路，确认是否存在慢请求、超时或间歇性不可用",
-			Level:  p.Status,
+			Level:  lvl,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return bizRank(out[i].Level) < bizRank(out[j].Level) })
@@ -1119,6 +1200,10 @@ func bizWindow(start, end int64) string {
 func demoBiz() *BizData {
 	b := &BizData{
 		Probes: []BizProbe{
+			{System: "天空地森林防火", Name: "门户网站首页", Addr: "https://www.lzfire.gov.cn/portal", Avail: 100, Avg: 46.8, Max: 128, Std: 9.6, Samples: 528,
+				CertExpire: time.Now().AddDate(0, 0, 12).Unix(), CertDays: 12, Points: demoBizPoints(46.8, 9.0, 5)},
+			{System: "天空地森林防火", Name: "统一认证中心", Addr: "https://sso.lzfire.gov.cn", Avail: 100, Avg: 24.5, Max: 63, Std: 3.8, Samples: 527,
+				CertExpire: time.Now().AddDate(0, 0, 186).Unix(), CertDays: 186, Points: demoBizPoints(24.5, 4.5, 2)},
 			{System: "天空地森林防火", Name: "GeoServer", Addr: "http://10.82.1.2:28070/geoserver/web", Avail: 100, Avg: 31.4, Max: 71, Std: 5.9, Samples: 528,
 				Status: bizNormal, Points: demoBizPoints(31.4, 6.0, 0)},
 			{System: "天空地森林防火", Name: "业务系统后端Nginx访问", Addr: "http://10.82.1.2:9527/login", Avail: 100, Avg: 7.2, Max: 19, Std: 1.9, Samples: 525,
@@ -1162,6 +1247,10 @@ func demoBiz() *BizData {
 				{Label: "空闲连接", Value: "242", Peak: "—", Thresh: "—", Status: bizNormal, Key: true},
 			}),
 		},
+	}
+	// 状态统一按当前判定规则推导（含证书有效期），避免演示数据与规则脱节
+	for i := range b.Probes {
+		b.Probes[i].Status = bizProbeStatus(b.Probes[i])
 	}
 	b.Findings = bizFindings(b)
 	return b
