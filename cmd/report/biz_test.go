@@ -521,3 +521,122 @@ func TestBizConclusionCert(t *testing.T) {
 		t.Errorf("证书临期时汇总状态应为关注，实得 %q", level)
 	}
 }
+
+// TestBizSQLServerKind SQL Server 的配置：发现指标、5 个关键指标、性能计数器表达式与趋势图
+func TestBizSQLServerKind(t *testing.T) {
+	var k *bizKind
+	for i := range bizKinds {
+		if bizKinds[i].ID == "sqlserver" {
+			k = &bizKinds[i]
+		}
+	}
+	if k == nil {
+		t.Fatal("bizKinds 中缺少 sqlserver")
+	}
+	if k.Discover != "sqlserver_up" {
+		t.Errorf("发现指标应为 sqlserver_up，实得 %q", k.Discover)
+	}
+	if k.Name != "SQL Server" || k.Category != "数据库" {
+		t.Errorf("名称 / 分类不符：%q / %q", k.Name, k.Category)
+	}
+
+	var keys []string
+	labels := map[string]bool{}
+	for _, m := range k.Metrics {
+		if m.Expr == "" && m.PairExpr[0] == "" {
+			t.Errorf("%s 缺表达式", m.Label)
+		}
+		if m.Fmt == nil || m.Judge == nil {
+			t.Errorf("%s 缺格式化或判定函数", m.Label)
+		}
+		if !strings.Contains(m.Expr, "{{inst}}") && m.PairExpr[0] == "" {
+			t.Errorf("%s 表达式未按实例过滤：%s", m.Label, m.Expr)
+		}
+		if m.Key {
+			keys = append(keys, m.Label)
+		}
+		labels[m.Label] = true
+	}
+	// 关键指标表一行 5 个指标，多于此会撑破页面
+	if len(keys) != 5 {
+		t.Errorf("关键指标应为 5 个，实得 %d 个：%v", len(keys), keys)
+	}
+	for _, want := range []string{"用户连接数", "批请求（次/s）", "数据缓存命中率", "阻塞进程数", "读延迟（ms/次）"} {
+		if !labels[want] {
+			t.Errorf("缺少指标 %q", want)
+		}
+	}
+	// 备份时长只覆盖 msdb 里的 SQL 备份，存储快照 / 备份一体机场景会误报，已按用户要求整行去掉
+	if labels["完整备份距今"] {
+		t.Error("完整备份距今已移除，不应再出现在指标表里")
+	}
+}
+
+// TestBizKindsStructure 所有组件类型的配置自检：发现指标非空、关键指标 ≤5、表达式按实例过滤
+func TestBizKindsStructure(t *testing.T) {
+	seen := map[string]bool{}
+	for _, k := range bizKinds {
+		if k.ID == "" || k.Name == "" || k.Category == "" || k.Discover == "" {
+			t.Errorf("%q 配置不完整：%+v", k.ID, k)
+		}
+		if seen[k.ID] {
+			t.Errorf("组件 ID 重复：%s", k.ID)
+		}
+		seen[k.ID] = true
+		if len(k.Metrics) == 0 {
+			t.Errorf("%s 未配置指标", k.ID)
+			continue
+		}
+		nKey := 0
+		for _, m := range k.Metrics {
+			if m.Key {
+				nKey++
+			}
+			if m.Expr == "" && m.PairExpr[0] == "" {
+				t.Errorf("%s / %s 缺表达式", k.ID, m.Label)
+			}
+			if m.Thresh == "" {
+				t.Errorf("%s / %s 缺参考阈值文案", k.ID, m.Label)
+			}
+			if m.Fmt == nil || m.Judge == nil {
+				t.Errorf("%s / %s 缺格式化或判定函数", k.ID, m.Label)
+			}
+		}
+		if nKey > 5 {
+			t.Errorf("%s 关键指标 %d 个，超过 5 个会撑破关键指标表", k.ID, nKey)
+		}
+	}
+}
+
+// TestBizEvalInstantParsesValue 瞬时查询返回的是 value（不是 values）。
+// 只解析 values 会让所有 Instant 指标（SQL Server 存活 / ZooKeeper 存活 / Redis 持久化状态等）整行静默丢失。
+func TestBizEvalInstantParsesValue(t *testing.T) {
+	withQuietLogger(t)
+	stub := &n9eStub{statuses: []int{200}, body: `{"status":"success","data":{"result":[{"metric":{},"value":[1758000000,"1"]}]}}`}
+	cli, _ := newStubClient(t, stub, 1)
+	mean, _, ok := bizEval(cli, "sqlserver_up", bizMetric{Label: "实例存活", Instant: true}, 0, 1758000000, 300)
+	if !ok || mean != 1 {
+		t.Fatalf("瞬时查询应解析出 1，实得 %v（ok=%v）", mean, ok)
+	}
+
+	// 区间查询仍走 values，取均值
+	stub2 := &n9eStub{statuses: []int{200}}
+	cli2, _ := newStubClient(t, stub2, 1)
+	mean2, peak2, ok2 := bizEval(cli2, "x", bizMetric{}, 0, 1758000000, 300)
+	if !ok2 || mean2 != 12.5 || peak2 != 12.5 {
+		t.Fatalf("区间查询应解析出 12.5，实得 %v / %v（ok=%v）", mean2, peak2, ok2)
+	}
+}
+
+// TestPromSeriesSamples 样本序列归一化：区间取 values、瞬时取 value、空则 nil
+func TestPromSeriesSamples(t *testing.T) {
+	if got := (promSeries{Values: [][]interface{}{{float64(1), "2"}}}).samples(); len(got) != 1 {
+		t.Errorf("区间查询应原样返回 values，实得 %v", got)
+	}
+	if got := (promSeries{Value: []interface{}{float64(1), "2"}}).samples(); len(got) != 1 || len(got[0]) != 2 {
+		t.Errorf("瞬时查询应把 value 归一成单元素序列，实得 %v", got)
+	}
+	if got := (promSeries{}).samples(); got != nil {
+		t.Errorf("无样本应返回 nil，实得 %v", got)
+	}
+}
