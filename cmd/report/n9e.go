@@ -510,7 +510,19 @@ func (c *N9EClient) Idents(ds string) ([]string, error) {
 
 type promSeries struct {
 	Metric map[string]string `json:"metric"`
-	Values [][]interface{}   `json:"values"`
+	Values [][]interface{}   `json:"values"` // 区间查询：[[ts, "v"], ...]
+	Value  []interface{}     `json:"value"`  // 瞬时查询：[ts, "v"]
+}
+
+// samples 统一取样本序列：区间查询用 values；瞬时查询把单个 value 归一成单元素序列
+func (s promSeries) samples() [][]interface{} {
+	if len(s.Values) > 0 {
+		return s.Values
+	}
+	if len(s.Value) == 2 {
+		return [][]interface{}{s.Value}
+	}
+	return nil
 }
 
 func (c *N9EClient) QueryInstant(expr string, ts int64) ([]promSeries, error) {
