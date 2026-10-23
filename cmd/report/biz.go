@@ -327,6 +327,11 @@ type bizKind struct {
 
 func inst(metric string) string { return metric + `{instance="{{inst}}"}` }
 
+// perfCounter SQL Server 的 Windows 性能计数器（计数器名含空格与斜杠，直接写进 counter 标签）
+func perfCounter(counter string) string {
+	return `sqlserver_performance_value{instance="{{inst}}",counter="` + counter + `"}`
+}
+
 // bizKinds 业务巡检支持的组件类型，顺序即报告中的出现顺序。
 // 新增类型只需在此追加一段配置：发现指标 + 指标定义（表达式 / 阈值 / 判定）。
 var bizKinds = []bizKind{
@@ -388,6 +393,49 @@ var bizKinds = []bizKind{
 				Fmt: fNum1, Thresh: "—", Judge: judgeNone},
 			{Label: "元组写入（/s）", Expr: `sum(rate(postgresql_tup_inserted{instance="{{inst}}"}[5m])+rate(postgresql_tup_updated{instance="{{inst}}"}[5m])+rate(postgresql_tup_deleted{instance="{{inst}}"}[5m]))`,
 				Fmt: fNum1, Thresh: "—", Judge: judgeNone},
+		},
+	},
+	{
+		// SQL Server 的指标全在 categraf sqlserver 插件里：sqlserver_up 与
+		// sqlserver_performance_value{counter="…"}（Windows 性能计数器，counter_type 65792 为瞬时值、
+		// 272696576 为累计计数器需 rate），另有 database_io / schedulers / waitstats / recentbackup 几组明细。
+		ID: "sqlserver", Name: "SQL Server", Category: "数据库", Discover: "sqlserver_up",
+		Metrics: []bizMetric{
+			{Label: "实例存活", Expr: `max(sqlserver_up{instance="{{inst}}"})`,
+				Fmt: func(v float64) string {
+					if v >= 1 {
+						return "存活"
+					}
+					return "不可用"
+				}, Thresh: "= 存活", Judge: judgeBelow(1, 1), NoPeak: true, Instant: true},
+			{Label: "用户连接数", Expr: perfCounter("User Connections"),
+				Fmt: fNum0, Thresh: "趋势观察", Judge: judgeNone, Key: true, NoPeak: true},
+			{Label: "批请求（次/s）", Expr: `sum(rate(` + perfCounter("Batch Requests/sec") + `[5m]))`,
+				Fmt: fNum2, Thresh: "趋势观察", Judge: judgeNone, Key: true},
+			{Label: "数据缓存命中率", Expr: perfCounter("Buffer cache hit ratio"),
+				Fmt: fPct, Thresh: "＞ 95%", Judge: judgeBelow(90, 95), Key: true},
+			{Label: "阻塞进程数", Expr: perfCounter("Processes blocked"),
+				Fmt: fNum0, Thresh: "= 0", Judge: judgeAny, Key: true, NoPeak: true},
+			{Label: "读延迟（ms/次）", Expr: `sum(rate(sqlserver_database_io_read_latency_ms{instance="{{inst}}"}[5m]))/clamp_min(sum(rate(sqlserver_database_io_reads{instance="{{inst}}"}[5m])),1e-6)`,
+				Fmt: fNum2, Thresh: "＜ 20 ms", Judge: judgeAt(50, 20), Key: true},
+			{Label: "写延迟（ms/次）", Expr: `sum(rate(sqlserver_database_io_write_latency_ms{instance="{{inst}}"}[5m]))/clamp_min(sum(rate(sqlserver_database_io_writes{instance="{{inst}}"}[5m])),1e-6)`,
+				Fmt: fNum2, Thresh: "＜ 20 ms", Judge: judgeAt(50, 20)},
+			{Label: "磁盘 IO 吞吐", Expr: `sum(rate(sqlserver_database_io_read_bytes{instance="{{inst}}"}[5m]))+sum(rate(sqlserver_database_io_write_bytes{instance="{{inst}}"}[5m]))`,
+				Fmt: fBytesRate, Thresh: "趋势观察", Judge: judgeNone},
+			{Label: "内存使用率", Expr: `sum(` + perfCounter("Total Server Memory (KB)") + `)/clamp_min(sum(` + perfCounter("Target Server Memory (KB)") + `),1)*100`,
+				Fmt: fPct, Thresh: "＜ 90%", Judge: judgeAt(95, 90), NoPeak: true},
+			{Label: "锁等待（/s）", Expr: `sum(rate(` + perfCounter("Lock Waits/sec") + `[5m]))`,
+				Fmt: fNum2, Thresh: "＜ 1", Judge: judgeAt(10, 1)},
+			{Label: "死锁（/s）", Expr: `sum(rate(` + perfCounter("Number of Deadlocks/sec") + `[5m]))`,
+				Fmt: fNum4, Thresh: "= 0", Judge: judgeAny},
+			{Label: "日志使用率", Expr: perfCounter("Percent Log Used"),
+				Fmt: fPct, Thresh: "＜ 80%", Judge: judgeAt(90, 80)},
+			{Label: "重编译率", Expr: `sum(rate(` + perfCounter("SQL Re-Compilations/sec") + `[5m]))/clamp_min(sum(rate(` + perfCounter("SQL Compilations/sec") + `[5m])),1e-6)*100`,
+				Fmt: fPct1, Thresh: "＜ 20%", Judge: judgeAt(30, 20)},
+			{Label: "可运行任务数", Expr: `sum(sqlserver_schedulers_runnable_tasks_count{instance="{{inst}}"})`,
+				Fmt: fNum0, Thresh: "趋势观察", Judge: judgeNone, NoPeak: true},
+			{Label: "元数据抓取耗时", Expr: `sqlserver_scrape_use_seconds{instance="{{inst}}"}*1000`,
+				Fmt: fMs, Thresh: "＜ 1000 ms", Judge: judgeAt(5000, 1000), NoPeak: true},
 		},
 	},
 	{
@@ -621,10 +669,11 @@ func bizEval(c *N9EClient, expr string, m bizMetric, start, end int64, step int)
 		}
 		sum, n := 0.0, 0
 		for _, s := range series {
-			if len(s.Values) == 0 || len(s.Values[0]) < 2 {
+			vals := s.samples()
+			if len(vals) == 0 || len(vals[0]) < 2 {
 				continue
 			}
-			f, good := promValue(s.Values[0][1])
+			f, good := promValue(vals[0][1])
 			if !good {
 				continue
 			}
@@ -736,6 +785,7 @@ func bizComponent(c *N9EClient, k bizKind, raw string, start, end int64, step in
 //   - MySQL：QPS 与连接使用率（双轴，使用率走右轴并画 80% 关注线）
 //   - Redis：吞吐量与内存占用（双轴，内存占用面积填充）
 //   - PostgreSQL：各库事务提交速率（按 db 拆序列，堆叠填充）
+//   - SQL Server：批请求量与读取延迟（双轴，延迟走右轴并画 20 ms 关注线）
 func bizCharts(c *N9EClient, k bizKind, raw string, start, end int64, step int) []BizChart {
 	repl := func(expr string) string { return strings.ReplaceAll(expr, "{{inst}}", quoteLabel(raw)) }
 	qr := func(expr string) []promSeries {
@@ -766,6 +816,30 @@ func bizCharts(c *N9EClient, k bizKind, raw string, start, end int64, step int) 
 				{Name: "QPS", Points: bizPoints(qps)},
 				{Name: "连接使用率", Axis: 1, Points: bizPoints(use)},
 			},
+		}}
+
+	case "sqlserver":
+		// 批请求走左轴（吞吐），读取延迟走右轴并叠 20 ms 关注线，用于判断「量涨延迟也涨」还是纯 IO 抖动
+		batch := qr(repl(`sum(rate(` + perfCounter("Batch Requests/sec") + `[5m]))`))
+		lat := qr(repl(`sum(rate(sqlserver_database_io_read_latency_ms{instance="{{inst}}"}[5m]))/clamp_min(sum(rate(sqlserver_database_io_reads{instance="{{inst}}"}[5m])),1e-6)`))
+		var bs []BizChartSeries
+		if pts := bizPoints(batch); len(pts) > 1 {
+			bs = append(bs, BizChartSeries{Name: "批请求", Points: pts})
+		}
+		if pts := bizPoints(lat); len(pts) > 1 {
+			bs = append(bs, BizChartSeries{Name: "读取延迟", Axis: 1, Points: pts})
+		}
+		if len(bs) == 0 {
+			return nil
+		}
+		return []BizChart{{
+			Title:       "批请求量与读取延迟趋势",
+			YLabel:      "次/s（批请求）",
+			YLabelRight: "ms/次（读取延迟）",
+			WarnLine:    20,
+			WarnAxis:    1,
+			WarnText:    "关注线 20 ms",
+			Series:      bs,
 		}}
 
 	case "redis":
@@ -1105,6 +1179,18 @@ var bizAdvice = map[string]string{
 	"慢查询（/s）":     "开启慢查询日志定位具体语句，补充缺失索引或改写执行计划",
 	"磁盘临时表（/s）":   "优化产生大量临时结果的排序 / 分组 / 子查询，必要时增大 tmp_table_size 与内部临时表内存",
 	"缓冲池命中率":      "确认缓冲池容量是否小于热数据量，评估扩容 innodb_buffer_pool_size",
+	"用户连接数":       "核查应用连接池与长连接占用，评估实例连接上限并推动连接复用",
+	"批请求（次/s）":    "结合业务峰值判断吞吐是否骤降，排查应用侧调用量与数据库负载变化",
+	"数据缓存命中率":     "核对热数据规模与缓冲池容量，评估调大 max server memory 或优化大表全扫",
+	"阻塞进程数":       "定位阻塞源头会话与被阻塞语句（sys.dm_tran_locks），处理长事务并复核锁粒度",
+	"读延迟（ms/次）":   "检查数据文件所在存储的 IO 压力与队列深度，排查磁盘瓶颈与文件碎片",
+	"写延迟（ms/次）":   "检查日志与数据文件的落盘性能，必要时拆分数据 / 日志磁盘或调整检查点频率",
+	"磁盘 IO 吞吐":    "结合存储带宽评估 IO 压力，确认是否存在全表扫描或大批量写入",
+	"内存使用率":       "核对 max server memory 与实例实际占用，避免与操作系统及其他实例争抢内存",
+	"锁等待（/s）":     "排查热点表与长事务，优化索引缩小锁范围，必要时调整事务隔离级别",
+	"日志使用率":       "确认恢复模式与日志备份策略（先做日志备份再收缩），避免日志写满导致库不可写",
+	"重编译率":        "检查参数化设置与统计信息更新，减少动态 SQL 拼接导致的重复编译",
+	"可运行任务数":      "观察 CPU 调度压力与并发会话数，评估实例 CPU 配额或错峰调度",
 	"回滚率":         "排查应用侧事务边界与异常回滚逻辑，确认失败原因",
 	"缓存命中率":       "核对热数据规模与缓存容量，检查是否频繁失效或缓存穿透",
 	"事务空闲占比":      "定位长时间不提交的事务，避免长期 idle in transaction 阻塞清理并放大锁等待",
