@@ -2,9 +2,9 @@ package main
 
 // version.go —— 版本信息
 
-// AppVersion 当前程序版本；默认值仅用于未注入版本号的本地构建，
-// CI / Docker 构建时通过 -ldflags "-X main.AppVersion=<tag>" 注入
-var AppVersion = "0.1.6"
+// AppVersion 当前程序版本；每次发布版本时同步改成新版本号（与 tag 保持一致），
+// CI / Docker 构建时仍通过 -ldflags "-X main.AppVersion=<tag>" 注入覆盖
+var AppVersion = "0.2.0"
 
 // AppName 程序名称
 const AppName = "巡检周报生成器"
