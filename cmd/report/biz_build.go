@@ -258,7 +258,8 @@ func buildBizChapter(d *Docx, b *BizData, ch int, tn *tableNo, figNo int) int {
 
 		note := "判断标准：可用率 ≥ 99.9%、平均响应 ＜ 500 ms、最大响应 ＜ 2000 ms、响应标准差 ＜ 200 ms 为正常；"
 		if hasCert {
-			note += sprintf("证书剩余有效期 ＜ %d 天标为关注、已过期标为告警（http 目标无证书信息，该列显示「—」）；", bizCertWarnDays)
+			note += sprintf("证书剩余有效期 ＜ %d 天标为关注、已过期标为告警（http 目标无证书信息，该列显示「—」）；"+
+				"证书域名与访问域名不一致（如用 IP 访问域名证书）时只展示到期日、不参与判定；", bizCertWarnDays)
 		}
 		d.BodyRuns(Run{Text: note + "任一指标越线即标为关注，状态取各项中最差的一项。", Size: 9, Color: grey})
 
@@ -526,12 +527,19 @@ func bizAddr(addr string) string {
 	return s
 }
 
-// bizCertText 证书到期列：默认只给到期日，临期补剩余天数、过期标明「已过期」作为提示
+// bizCertText 证书到期列：默认只给到期日，临期补剩余天数、过期标明「已过期」作为提示。
+// 证书域名与访问域名不一致时不参与判定，仅临近到期时标注「域名不符」，避免把别的站点证书算成本目标风险。
 func bizCertText(p BizProbe) string {
 	if p.CertExpire <= 0 {
 		return "—"
 	}
 	day := bizCertDate(p.CertExpire)
+	if !p.certApplies() {
+		if p.CertDays < bizCertWarnDays {
+			return sprintf("%s（域名不符）", day)
+		}
+		return day
+	}
 	switch {
 	case p.CertDays < 0:
 		return sprintf("%s（已过期）", day)

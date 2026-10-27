@@ -108,6 +108,12 @@ type BizPoint struct {
 	V  float64
 }
 
+// bizCert 单个探活目标的证书信息
+type bizCert struct {
+	expire int64  // 到期时间（Unix 秒）
+	name   string // 叶子证书 Subject CN
+}
+
 // BizProbe 一个应用探活目标
 type BizProbe struct {
 	System     string
@@ -118,8 +124,9 @@ type BizProbe struct {
 	Max        float64
 	Std        float64
 	Samples    int
-	CertExpire int64 // HTTPS 证书到期时间（Unix 秒），0 = 该目标无证书信息（http / 插件未采集）
-	CertDays   int   // 距报告期末的剩余天数，负值表示已过期
+	CertExpire int64  // HTTPS 证书到期时间（Unix 秒），0 = 该目标无证书信息（http / 插件未采集）
+	CertName   string // 证书叶子节点的 Subject CN，用于判断证书域名与访问域名是否一致
+	CertDays   int    // 距报告期末的剩余天数，负值表示已过期
 	Status     string
 	Points     []BizPoint // 响应时间轨迹，用于折线图（已下采样）
 }
@@ -1008,9 +1015,10 @@ func collectBizProbes(c *N9EClient, start, end int64, step int) []BizProbe {
 			p.System = "—"
 		}
 		// 证书到期时间只在 https 目标上有输出；按报告期末算剩余天数，供表格与状态判定使用
-		if ts, ok := certs[target]; ok && ts > 0 {
-			p.CertExpire = ts
-			p.CertDays = int(math.Floor(float64(ts-end) / 86400))
+		if cert, ok := certs[target]; ok && cert.expire > 0 {
+			p.CertExpire = cert.expire
+			p.CertName = cert.name
+			p.CertDays = int(math.Floor(float64(cert.expire-end) / 86400))
 		}
 
 		rt, err := c.QueryRange(sprintf(`http_response_response_time_ms{target="%s"}`, quoteLabel(target)), start, end, step)
@@ -1033,10 +1041,10 @@ func collectBizProbes(c *N9EClient, start, end int64, step int) []BizProbe {
 	return out
 }
 
-// collectBizCerts 采集 HTTPS 证书到期时间（categraf http_response 的独立指标，仅 https 目标输出）。
+// collectBizCerts 采集 HTTPS 证书信息（categraf http_response 的独立指标，仅 https 目标输出）。
 // 指标不存在（全为 http 目标或插件版本较旧）时返回空表，报告中相应列自动隐藏。
-func collectBizCerts(c *N9EClient, start, end int64, step int) map[string]int64 {
-	out := map[string]int64{}
+func collectBizCerts(c *N9EClient, start, end int64, step int) map[string]bizCert {
+	out := map[string]bizCert{}
 	series, err := c.QueryRange("http_response_cert_expire_timestamp", start, end, step)
 	if err != nil {
 		log.Debugf("证书到期时间获取失败：%v", err)
@@ -1052,7 +1060,11 @@ func collectBizCerts(c *N9EClient, start, end int64, step int) map[string]int64 
 				continue
 			}
 			if ts, ok := promValue(v[1]); ok && ts > 0 {
-				out[target] = int64(ts)
+				out[target] = bizCert{
+					expire: int64(ts),
+					// cert_name 是叶子证书的 Subject CN（categraf getCertName），用于判断证书域名与访问域名是否一致
+					name: strings.TrimSpace(s.Metric["cert_name"]),
+				}
 			}
 		}
 	}
@@ -1128,9 +1140,65 @@ func bizProbeStatus(p BizProbe) string {
 	return bizWorst(s, bizProbeCertStatus(p))
 }
 
-// bizProbeCertStatus 证书状态：已过期告警，剩余 ＜30 天关注，无证书信息视为正常
-func bizProbeCertStatus(p BizProbe) string {
+// certApplies 该证书是否属于当前探活目标（域名一致才参与临期/过期判定）。
+// 用 IP 探测域名站点、或探测的目标挂着别的站点证书时，到期时间与本目标无关，
+// 只展示到期日、不产生告警，避免把别人的证书当成自己的风险。
+func (p BizProbe) certApplies() bool {
 	if p.CertExpire <= 0 {
+		return false
+	}
+	return certNameMatchesHost(p.CertName, certHostOf(p.Addr))
+}
+
+// certHostOf 从探活地址里取访问主机名（去 scheme / 用户信息 / 端口 / 路径，转小写）
+func certHostOf(target string) string {
+	s := strings.TrimSpace(target)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
+	}
+	if strings.HasPrefix(s, "[") { // IPv6 字面量 [::1]:8443
+		if i := strings.Index(s, "]"); i > 0 {
+			return strings.ToLower(s[1:i])
+		}
+	}
+	if i := strings.LastIndex(s, ":"); i >= 0 && strings.Count(s, ":") == 1 {
+		s = s[:i]
+	}
+	return strings.TrimSuffix(strings.ToLower(s), ".")
+}
+
+// certNameMatchesHost 判断证书 CN 与访问主机是否属于同一站点：
+//   - 任一为空：无法判断，按一致处理（宁可保留告警，不因缺信息漏报）；
+//   - 完全相同（忽略大小写与末尾点）；
+//   - 通配符 *.a.com 覆盖 a.com 的一级子域；
+//   - 层级不同但同站（www.a.com ↔ a.com）。
+//
+// 其余情况视为不一致：典型是「IP 访问 + 域名证书」和「多站点共用一台机器」。
+func certNameMatchesHost(certName, host string) bool {
+	c := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(certName)), ".")
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if c == "" || h == "" {
+		return true
+	}
+	if c == h {
+		return true
+	}
+	if strings.HasPrefix(c, "*.") {
+		suffix := c[1:] // ".a.com"
+		return strings.HasSuffix(h, suffix) && !strings.Contains(strings.TrimSuffix(h, suffix), ".")
+	}
+	return strings.HasSuffix(h, "."+c) || strings.HasSuffix(c, "."+h)
+}
+
+// bizProbeCertStatus 证书状态：已过期告警，剩余 ＜30 天关注，无证书信息或域名不一致视为正常
+func bizProbeCertStatus(p BizProbe) string {
+	if !p.certApplies() {
 		return bizNormal
 	}
 	switch {
@@ -1287,9 +1355,11 @@ func demoBiz() *BizData {
 	b := &BizData{
 		Probes: []BizProbe{
 			{System: "天空地森林防火", Name: "门户网站首页", Addr: "https://www.lzfire.gov.cn/portal", Avail: 100, Avg: 46.8, Max: 128, Std: 9.6, Samples: 528,
-				CertExpire: time.Now().AddDate(0, 0, 12).Unix(), CertDays: 12, Points: demoBizPoints(46.8, 9.0, 5)},
+				CertExpire: time.Now().AddDate(0, 0, 12).Unix(), CertName: "www.lzfire.gov.cn", CertDays: 12, Points: demoBizPoints(46.8, 9.0, 5)},
 			{System: "天空地森林防火", Name: "统一认证中心", Addr: "https://sso.lzfire.gov.cn", Avail: 100, Avg: 24.5, Max: 63, Std: 3.8, Samples: 527,
-				CertExpire: time.Now().AddDate(0, 0, 186).Unix(), CertDays: 186, Points: demoBizPoints(24.5, 4.5, 2)},
+				CertExpire: time.Now().AddDate(0, 0, 186).Unix(), CertName: "sso.lzfire.gov.cn", CertDays: 186, Points: demoBizPoints(24.5, 4.5, 2)},
+			{System: "天空地森林防火", Name: "防火指挥调度", Addr: "https://10.82.1.6:443/command", Avail: 100, Avg: 38.2, Max: 96, Std: 7.1, Samples: 528,
+				CertExpire: time.Now().AddDate(0, 0, 15).Unix(), CertName: "www.lzfire.gov.cn", CertDays: 15, Points: demoBizPoints(38.2, 7.5, 4)},
 			{System: "天空地森林防火", Name: "GeoServer", Addr: "http://10.82.1.2:28070/geoserver/web", Avail: 100, Avg: 31.4, Max: 71, Std: 5.9, Samples: 528,
 				Status: bizNormal, Points: demoBizPoints(31.4, 6.0, 0)},
 			{System: "天空地森林防火", Name: "业务系统后端Nginx访问", Addr: "http://10.82.1.2:9527/login", Avail: 100, Avg: 7.2, Max: 19, Std: 1.9, Samples: 525,
