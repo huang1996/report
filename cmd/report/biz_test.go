@@ -640,3 +640,92 @@ func TestPromSeriesSamples(t *testing.T) {
 		t.Errorf("无样本应返回 nil，实得 %v", got)
 	}
 }
+
+// TestCertNameMatchesHost 证书域名与访问域名的匹配规则
+func TestCertNameMatchesHost(t *testing.T) {
+	cases := []struct {
+		cert, host string
+		want       bool
+		desc       string
+	}{
+		{"www.a.com", "www.a.com", true, "完全相同"},
+		{"WWW.A.COM.", "www.a.com", true, "忽略大小写与末尾点"},
+		{"www.a.com", "a.com", true, "同站不同层级"},
+		{"a.com", "www.a.com", true, "反向层级"},
+		{"*.a.com", "api.a.com", true, "通配符覆盖一级子域"},
+		{"*.a.com", "a.com", false, "通配符不覆盖裸域"},
+		{"*.a.com", "x.y.a.com", false, "通配符只覆盖一级"},
+		{"www.a.com", "10.0.0.9", false, "IP 访问域名证书"},
+		{"10.0.0.9", "10.0.0.9", true, "IP 对 IP"},
+		{"www.a.com", "www.b.com", false, "不同站点"},
+		{"", "www.a.com", true, "CN 缺失时按一致处理"},
+		{"www.a.com", "", true, "主机缺失时按一致处理"},
+	}
+	for _, c := range cases {
+		if got := certNameMatchesHost(c.cert, c.host); got != c.want {
+			t.Errorf("%s：certNameMatchesHost(%q,%q) = %v，期望 %v", c.desc, c.cert, c.host, got, c.want)
+		}
+	}
+}
+
+// TestCertHostOf 从探活地址里取主机名
+func TestCertHostOf(t *testing.T) {
+	cases := map[string]string{
+		"https://www.a.com/portal":     "www.a.com",
+		"https://www.a.com:8443/x?y=1": "www.a.com",
+		"HTTP://user:pwd@www.a.com/x":  "www.a.com",
+		"https://10.0.0.9:443":         "10.0.0.9",
+		"https://[::1]:8443/x":         "::1",
+		"www.a.com":                    "www.a.com",
+	}
+	for in, want := range cases {
+		if got := certHostOf(in); got != want {
+			t.Errorf("certHostOf(%q) = %q，期望 %q", in, got, want)
+		}
+	}
+}
+
+// TestBizProbeCertMismatchIgnored 证书域名与访问域名不一致时不参与判定：
+// 状态仍为正常、不产生巡检发现、表格里只给到期日并标注「域名不符」。
+func TestBizProbeCertMismatchIgnored(t *testing.T) {
+	cert := time.Now().AddDate(0, 0, 15)
+	b := bizCertDemo([]BizProbe{{
+		System: "天空地森林防火", Name: "指挥调度", Addr: "https://10.0.0.9:443/command",
+		Avail: 100, Avg: 20, Max: 60, Std: 3,
+		CertExpire: cert.Unix(), CertName: "www.a.gov.cn", CertDays: 15,
+	}})
+	if got := b.Probes[0].Status; got != bizNormal {
+		t.Errorf("域名不一致时状态应为正常，实得 %q", got)
+	}
+	for _, f := range bizFindings(b) {
+		if strings.Contains(f.Desc, "证书") {
+			t.Errorf("域名不一致不应产生证书类发现：%+v", f)
+		}
+	}
+	text, _ := bizConclusion(b)
+	if strings.Contains(text, "证书") {
+		t.Errorf("域名不一致时总体结论不应提证书：%s", text)
+	}
+
+	out := buildBizDocx(t, b, true)
+	txt := docText(t, out)
+	if !strings.Contains(txt, "（域名不符）") {
+		t.Error("证书临期但域名不一致时，到期列应标注「域名不符」")
+	}
+	if strings.Contains(txt, "（15 天）") {
+		t.Error("域名不一致时不应给出剩余天数提示")
+	}
+	// 该单元格不应着色（statusColor[关注] = C55A11）
+	doc := docxPart(t, out, "word/document.xml")
+	idx := strings.Index(doc, "（域名不符）")
+	if idx < 0 {
+		t.Fatal("文档中未找到「域名不符」单元格")
+	}
+	from := idx - 600
+	if from < 0 {
+		from = 0
+	}
+	if strings.Contains(doc[from:idx], "C55A11") {
+		t.Error("域名不一致的证书单元格不应按「关注」着色")
+	}
+}
