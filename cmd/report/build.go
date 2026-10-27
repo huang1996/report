@@ -374,7 +374,8 @@ func BuildReport(in *BuildInput) (string, error) {
 			sub("磁盘分区使用明细")
 			d.TableCentered([]string{"IP 地址", "挂载点", "文件系统", "容量", "已用", "使用率", "状态"},
 				parts, []float64{2.8, 4.0, 2.0, 2.0, 2.0, 1.9, 1.6}, map[int]bool{6: true}, 9, false)
-			d.Caption(sprintf("表 %d　磁盘分区使用明细（使用率为周期内均值；仅列出真实分区，已剔除 tmpfs / overlay 等"+
+			d.Caption(sprintf("表 %d　磁盘分区使用明细（容量与使用率均取周期末最后一次采样，"+
+				"已用 = 容量 × 使用率；仅列出真实分区，已剔除 tmpfs / overlay 等"+
 				"内存文件系统与 /run、/dev、/sys 等运行时虚拟目录；同一设备挂载到多个路径（bind mount / Docker 子目录）"+
 				"时只保留一个代表挂载点。本表含 NFS 等共享存储，与资源明细表「不含共享存储」的容量口径不同，两表容量不可直接对照）", tn.next()))
 		}

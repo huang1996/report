@@ -1065,7 +1065,7 @@ type DiskPart struct {
 	Fstype  string  // 文件系统类型（ext4 / xfs / NTFS / nfs4 …）
 	Device  string  // 设备名（dm-0 / sda2 / C: / 远端 NFS 路径）
 	CapGB   float64 // 容量（GB）
-	UsedPct float64 // 周期内平均使用率
+	UsedPct float64 // 周期末使用率（与容量取同一时刻的采样）
 }
 
 // diskRep 归并后的代表挂载点
@@ -1116,6 +1116,10 @@ func pickDiskDevReps(vols map[string]diskVol, skipRemote bool) map[string]diskRe
 //  1. 剔除伪分区（tmpfs / overlay 等内存文件系统，以及 /run、/dev、/sys 等运行时虚拟目录）；
 //  2. 同一设备挂到多个路径时只保留一个代表路径，避免同一块盘出现多行重复数据。
 //
+// 取值口径：容量与使用率都取周期内**最后一次采样**（同一时刻），因此「已用 = 容量 × 使用率」
+// 就是期末那一瞬间的真实快照，不会出现「期末容量 × 周期均值使用率」这种跨时刻混算。
+// 想看周期内的波动与峰值，用资源章节的磁盘趋势图；整机加权值见资源明细表（那张表仍是周期均值）。
+//
 // 与表 3 的容量口径差异：本函数**不排除** NFS 等共享存储（共享存储同样是会写满的分区），
 // 故两表容量不可直接对照。
 func diskPartsOf(vols map[string]diskVol, seq map[string][][2]float64) []DiskPart {
@@ -1147,20 +1151,19 @@ func diskPartsOf(vols map[string]diskVol, seq map[string][][2]float64) []DiskPar
 			Fstype:  v.fstype,
 			Device:  v.device,
 			CapGB:   v.total / (1 << 30),
-			UsedPct: avg(pairVals(seq[path])),
+			UsedPct: lastPairVal(seq[path]),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
-// pairVals 取出 (ts, val) 序列中的值部分
-func pairVals(pairs [][2]float64) []float64 {
-	out := make([]float64, 0, len(pairs))
-	for _, p := range pairs {
-		out = append(out, p[1])
+// lastPairVal 取 (ts, val) 序列的最后一个值（周期末采样）；无样本时返回 0
+func lastPairVal(pairs [][2]float64) float64 {
+	if len(pairs) == 0 {
+		return 0
 	}
-	return out
+	return pairs[len(pairs)-1][1]
 }
 
 // pickDiskReps 把一台主机的挂载点归并成「参与统计的挂载点」集合，返回总容量（字节）

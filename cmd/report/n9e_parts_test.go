@@ -57,7 +57,7 @@ func TestIsRealMount(t *testing.T) {
 	}
 }
 
-// TestDiskPartsOf 分区明细：过滤伪分区、按挂载点排序、使用率取周期均值。
+// TestDiskPartsOf 分区明细：过滤伪分区、按挂载点排序、使用率取周期末最后一次采样。
 func TestDiskPartsOf(t *testing.T) {
 	vols := map[string]diskVol{
 		"/":    {device: "dm-0", fstype: "xfs", total: 999.51 * testGB},
@@ -67,8 +67,8 @@ func TestDiskPartsOf(t *testing.T) {
 		"/data/docker/containers":                       {device: "dm-1", fstype: "xfs", total: 100 * testGB},
 	}
 	seq := map[string][][2]float64{
-		"/":                       {{0, 30}, {60, 34}}, // 均值 32
-		"/mnt":                    {{0, 10}, {60, 20}}, // 均值 15
+		"/":                       {{0, 30}, {60, 34}}, // 末值 34（均值 32）
+		"/mnt":                    {{0, 20}, {60, 10}}, // 末值 10（均值 15、峰值 20，用于区分口径）
 		"/data/docker/containers": {{0, 50}, {60, 50}},
 	}
 
@@ -83,8 +83,8 @@ func TestDiskPartsOf(t *testing.T) {
 			t.Errorf("第 %d 个挂载点 = %q，期望 %q", i, p.Path, wantOrder[i])
 		}
 	}
-	if math.Abs(got[0].UsedPct-32) > 1e-9 {
-		t.Errorf("/ 使用率 = %.2f，期望 32（周期均值）", got[0].UsedPct)
+	if math.Abs(got[0].UsedPct-34) > 1e-9 {
+		t.Errorf("/ 使用率 = %.2f，期望 34（周期末采样，均值是 32）", got[0].UsedPct)
 	}
 	if math.Abs(got[0].CapGB-999.51) > 0.01 {
 		t.Errorf("/ 容量 = %.2f GB，期望 999.51 GB", got[0].CapGB)
@@ -94,6 +94,9 @@ func TestDiskPartsOf(t *testing.T) {
 	}
 	if math.Abs(got[2].CapGB-492.03) > 0.01 {
 		t.Errorf("/mnt 容量 = %.2f GB，期望 492.03 GB", got[2].CapGB)
+	}
+	if math.Abs(got[2].UsedPct-10) > 1e-9 {
+		t.Errorf("/mnt 使用率 = %.2f，期望 10（末值，不是均值 15 或峰值 20）", got[2].UsedPct)
 	}
 }
 
