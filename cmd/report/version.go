@@ -4,7 +4,7 @@ package main
 
 // AppVersion 当前程序版本；每次发布版本时同步改成新版本号（与 tag 保持一致），
 // CI / Docker 构建时仍通过 -ldflags "-X main.AppVersion=<tag>" 注入覆盖
-var AppVersion = "0.2.0"
+var AppVersion = "0.2.1"
 
 // AppName 程序名称
 const AppName = "巡检周报生成器"
