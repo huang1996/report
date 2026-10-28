@@ -729,3 +729,52 @@ func TestBizProbeCertMismatchIgnored(t *testing.T) {
 		t.Error("域名不一致的证书单元格不应按「关注」着色")
 	}
 }
+
+// TestBizClickHouseKind ClickHouse 的配置：发现指标、5 个关键指标、磁盘使用率由剩余空间反算
+func TestBizClickHouseKind(t *testing.T) {
+	var k *bizKind
+	for i := range bizKinds {
+		if bizKinds[i].ID == "clickhouse" {
+			k = &bizKinds[i]
+		}
+	}
+	if k == nil {
+		t.Fatal("bizKinds 中缺少 clickhouse")
+	}
+	if k.Discover != "clickhouse_metrics_version_integer" {
+		t.Errorf("发现指标应为 clickhouse_metrics_version_integer，实得 %q", k.Discover)
+	}
+	if k.Name != "ClickHouse" || k.Category != "数据库" {
+		t.Errorf("名称 / 分类不符：%q / %q", k.Name, k.Category)
+	}
+
+	var keys []string
+	byLabel := map[string]bizMetric{}
+	for _, m := range k.Metrics {
+		if !strings.Contains(m.Expr, "{{inst}}") {
+			t.Errorf("%s 表达式未按实例过滤：%s", m.Label, m.Expr)
+		}
+		if m.Key {
+			keys = append(keys, m.Label)
+		}
+		byLabel[m.Label] = m
+	}
+	if len(keys) != 5 {
+		t.Errorf("关键指标应为 5 个，实得 %d 个：%v", len(keys), keys)
+	}
+	for _, want := range []string{"查询速率（次/s）", "失败查询（/s）", "内存使用率", "磁盘使用率", "平均查询耗时（ms）"} {
+		if _, ok := byLabel[want]; !ok {
+			t.Errorf("缺少指标 %q", want)
+		}
+	}
+	// 磁盘指标只有「剩余空间百分比」，使用率必须由 100-min(free) 反算，且取最满的那块盘
+	if expr := byLabel["磁盘使用率"].Expr; !strings.HasPrefix(expr, "100-min(") {
+		t.Errorf("磁盘使用率应由剩余空间反算，实得：%s", expr)
+	}
+	// 副本延迟、只读副本必须在明细表里（不进关键表也要能被判出来）
+	for _, want := range []string{"只读副本", "副本延迟（秒）"} {
+		if _, ok := byLabel[want]; !ok {
+			t.Errorf("缺少副本相关指标 %q", want)
+		}
+	}
+}
