@@ -446,6 +446,42 @@ var bizKinds = []bizKind{
 		},
 	},
 	{
+		// ClickHouse 指标来自 clickhouse_exporter 系列前缀：clickhouse_events_*（system.events 累计计数器，
+		// 必须 rate）、clickhouse_metrics_*（system.metrics 当前值）、clickhouse_asynchronous_metrics_*（异步指标）、
+		// clickhouse_tables_*（逐表）、clickhouse_mutations_* / clickhouse_disks_* 等明细。
+		ID: "clickhouse", Name: "ClickHouse", Category: "数据库", Discover: "clickhouse_metrics_version_integer",
+		Metrics: []bizMetric{
+			{Label: "查询速率（次/s）", Expr: `sum(rate(clickhouse_events_query{instance="{{inst}}"}[5m]))`,
+				Fmt: fNum2, Thresh: "趋势观察", Judge: judgeNone, Key: true},
+			{Label: "失败查询（/s）", Expr: `sum(rate(clickhouse_events_failed_query{instance="{{inst}}"}[5m]))`,
+				Fmt: fNum3, Thresh: "＜ 0.1", Judge: judgeAt(1, 0.1), Key: true},
+			{Label: "内存使用率", Expr: inst("clickhouse_metrics_memory_tracking") + "/clamp_min(" + inst("clickhouse_asynchronous_metrics_os_memory_total") + ",1)*100",
+				Fmt: fPct, Thresh: "＜ 80%", Judge: judgeAt(90, 80), Key: true},
+			{Label: "磁盘使用率", Expr: `100-min(` + inst("clickhouse_disks_free_space_percent") + `)`,
+				Fmt: fPct, Thresh: "＜ 80%", Judge: judgeAt(90, 80), Key: true},
+			{Label: "平均查询耗时（ms）", Expr: `sum(rate(clickhouse_events_query_time_microseconds{instance="{{inst}}"}[5m]))/clamp_min(sum(rate(clickhouse_events_query{instance="{{inst}}"}[5m])),1e-6)/1000`,
+				Fmt: fNum1, Thresh: "＜ 500 ms", Judge: judgeAt(2000, 500), Key: true},
+			{Label: "只读副本", Expr: inst("clickhouse_metrics_readonly_replica"),
+				Fmt: fNum0, Thresh: "= 0", Judge: judgeAny, NoPeak: true},
+			{Label: "副本延迟（秒）", Expr: inst("clickhouse_asynchronous_metrics_replicas_max_absolute_delay"),
+				Fmt: fNum1, Thresh: "＜ 60 秒", Judge: judgeAt(300, 60), NoPeak: true},
+			{Label: "合并任务数", Expr: inst("clickhouse_metrics_merge"),
+				Fmt: fNum0, Thresh: "趋势观察", Judge: judgeNone, NoPeak: true},
+			{Label: "活跃分区数", Expr: inst("clickhouse_metrics_parts_active"),
+				Fmt: fInt, Thresh: "趋势观察", Judge: judgeNone, NoPeak: true},
+			{Label: "突变失败", Expr: `sum(` + inst("clickhouse_mutations_failed") + `)`,
+				Fmt: fNum0, Thresh: "= 0", Judge: judgeAny, NoPeak: true},
+			{Label: "数据总量", Expr: `sum(clickhouse_tables_bytes{instance="{{inst}}"})`,
+				Fmt: fBytes, Thresh: "趋势观察", Judge: judgeNone, NoPeak: true},
+			{Label: "表数量", Expr: `count(clickhouse_tables_bytes{instance="{{inst}}"})`,
+				Fmt: fNum0, Thresh: "趋势观察", Judge: judgeNone, NoPeak: true},
+			{Label: "临时文件", Expr: inst("clickhouse_metrics_total_temporary_files"),
+				Fmt: fNum0, Thresh: "＜ 10", Judge: judgeAt(50, 10), NoPeak: true},
+			{Label: "运行时长", Expr: inst("clickhouse_asynchronous_metrics_uptime") + "/86400",
+				Fmt: fDay, Thresh: "趋势观察", Judge: judgeNone, NoPeak: true},
+		},
+	},
+	{
 		ID: "redis", Name: "Redis", Category: "缓存", Discover: "redis_up",
 		Metrics: []bizMetric{
 			{Label: "内存使用", Expr: inst("redis_used_memory"),
@@ -793,6 +829,7 @@ func bizComponent(c *N9EClient, k bizKind, raw string, start, end int64, step in
 //   - Redis：吞吐量与内存占用（双轴，内存占用面积填充）
 //   - PostgreSQL：各库事务提交速率（按 db 拆序列，堆叠填充）
 //   - SQL Server：批请求量与读取延迟（双轴，延迟走右轴并画 20 ms 关注线）
+//   - ClickHouse：查询速率与内存使用率（双轴，内存固定 0~100% 并画 80% 关注线）
 func bizCharts(c *N9EClient, k bizKind, raw string, start, end int64, step int) []BizChart {
 	repl := func(expr string) string { return strings.ReplaceAll(expr, "{{inst}}", quoteLabel(raw)) }
 	qr := func(expr string) []promSeries {
@@ -847,6 +884,27 @@ func bizCharts(c *N9EClient, k bizKind, raw string, start, end int64, step int) 
 			WarnAxis:    1,
 			WarnText:    "关注线 20 ms",
 			Series:      bs,
+		}}
+
+	case "clickhouse":
+		// 查询速率走左轴（负载），内存使用率走右轴并固定 0~100%：ClickHouse 最常见的事故是内存打满被 OOM 杀掉
+		qps := qr(repl(`sum(rate(clickhouse_events_query{instance="{{inst}}"}[5m]))`))
+		mem := qr(repl(inst("clickhouse_metrics_memory_tracking") + "/clamp_min(" + inst("clickhouse_asynchronous_metrics_os_memory_total") + ",1)*100"))
+		if len(qps) == 0 && len(mem) == 0 {
+			return nil
+		}
+		return []BizChart{{
+			Title:       "查询速率与内存使用率趋势",
+			YLabel:      "次/s（查询）",
+			YLabelRight: "%（内存使用率）",
+			YMaxRight:   100,
+			WarnLine:    80,
+			WarnAxis:    1,
+			WarnText:    "关注线 80%",
+			Series: []BizChartSeries{
+				{Name: "查询速率", Points: bizPoints(qps)},
+				{Name: "内存使用率", Axis: 1, Points: bizPoints(mem)},
+			},
 		}}
 
 	case "redis":
@@ -1254,11 +1312,21 @@ var bizAdvice = map[string]string{
 	"读延迟（ms/次）":   "检查数据文件所在存储的 IO 压力与队列深度，排查磁盘瓶颈与文件碎片",
 	"写延迟（ms/次）":   "检查日志与数据文件的落盘性能，必要时拆分数据 / 日志磁盘或调整检查点频率",
 	"磁盘 IO 吞吐":    "结合存储带宽评估 IO 压力，确认是否存在全表扫描或大批量写入",
-	"内存使用率":       "核对 max server memory 与实例实际占用，避免与操作系统及其他实例争抢内存",
+	"内存使用率":       "核对实例内存上限与真实占用（SQL Server 看 max server memory，ClickHouse 看 max_server_memory_usage），排查大查询与缓存占用，避免与操作系统争抢或被 OOM 杀掉",
 	"锁等待（/s）":     "排查热点表与长事务，优化索引缩小锁范围，必要时调整事务隔离级别",
 	"日志使用率":       "确认恢复模式与日志备份策略（先做日志备份再收缩），避免日志写满导致库不可写",
 	"重编译率":        "检查参数化设置与统计信息更新，减少动态 SQL 拼接导致的重复编译",
 	"可运行任务数":      "观察 CPU 调度压力与并发会话数，评估实例 CPU 配额或错峰调度",
+	"查询速率（次/s）":   "结合业务峰值判断负载是否异常升降，排查上游写入 / 查询量的变化",
+	"失败查询（/s）":    "查 system.query_log 中的 exception_code 与 exception 文本，定位语法、权限或资源限制类失败",
+	"磁盘使用率":       "关注数据盘水位，评估 TTL / 分区粒度调整或扩容，避免落盘失败",
+	"平均查询耗时（ms）":  "定位慢查询与大表扫描，检查分区裁剪、主键与索引设计",
+	"只读副本":        "副本进入只读，优先检查 Keeper / ZooKeeper 会话与磁盘空间，恢复后执行 SYSTEM RESTART REPLICA",
+	"副本延迟（秒）":     "检查复制队列与节点间网络，排查写入阻塞与磁盘瓶颈",
+	"合并任务数":       "合并积压时检查 parts 数量与后台池配额，必要时调整 merge_tree 参数",
+	"活跃分区数":       "分区过多会拖慢启动与合并，评估分区粒度（按月 / 按天）与 TTL 策略",
+	"突变失败":        "查看 system.mutations 的 latest_fail_reason，修复后 kill mutation 重试",
+	"临时文件":        "临时文件堆积说明有超限的排序 / 聚合落盘，检查 max_bytes_before_external_* 与磁盘余量",
 	"回滚率":         "排查应用侧事务边界与异常回滚逻辑，确认失败原因",
 	"缓存命中率":       "核对热数据规模与缓存容量，检查是否频繁失效或缓存穿透",
 	"事务空闲占比":      "定位长时间不提交的事务，避免长期 idle in transaction 阻塞清理并放大锁等待",
