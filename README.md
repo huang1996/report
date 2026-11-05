@@ -90,6 +90,7 @@ docker compose run --rm report -list-ds
 | `REPORT_INCLUDE_BIZ`     | `-report_include_biz`  | 是否添加「业务巡检」章节（`1`/`true` 开启）；开启但无探活且无中间件数据时章节留空                                                       | 不添加           |
 | `BIZ_DS_ID`              | `-biz_ds_id`           | 业务巡检专用数据源 ID（业务指标通常与主机资源不在同一数据源）；留空则与 `N9E_DS_ID` 相同                                                 | 同 `N9E_DS_ID` |
 | `REPORT_FAKE_WHEN_EMPTY` | `-fake_when_empty`     | 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标（详见下节）                                                            | 关闭            |
+| `EXCLUDE_HOST_IPS`      | `-exclude_host_ips`    | 排除的主机 IP，逗号分隔：这些主机的资源指标不进第 3 章与总体结论，落在其上的业务巡检组件（探活 / 实例）也一并跳过；WAF 不受影响 |               |
 | `REPORT_RUN_WEEKDAYS`    | `-report_run_weekdays` | 定时模式下仅在这些星期生成（`0`=周日…`6`=周六，逗号分隔）                                                                    | 每天            |
 | `LOG_LEVEL`              | `-log_level`           | 日志等级：DEBUG / INFO / WARN / ERROR                                                                     | `INFO`        |
 | `WEBDAV_HOSTNAME`        | `-webdav_hostname`     | WebDAV 上传地址；**不配则只存本地**                                                                              |               |
