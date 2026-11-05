@@ -9,7 +9,7 @@
 
 - 报告格式与主体结构以原「生成巡检周报」脚本为准（章节、图表、阈值口径、配色一致）
 - safeline-report 的全部数据（防护应用、访问/攻击统计、攻击类型饼图、未拦截明细）无缺失融入 WAF 章节
-- WebDAV 上传逻辑保留（`report/<工程师>/<yyyymmdd>/<文件名>`）
+- WebDAV 上传逻辑保留（默认 `report/<工程师>/<yyyymmdd>/<文件名>`，可用 `WEBDAV_DIR` 模板自定义目录）
 - Go 重构，无 Python 依赖；docker compose 一键部署，配置走 `.env`，命令参数走 compose `command`
 
 ## 报告结构（合并后）
@@ -96,6 +96,7 @@ docker compose run --rm report -list-ds
 | `WEBDAV_HOSTNAME`        | `-webdav_hostname`     | WebDAV 上传地址；**不配则只存本地**                                                                              |               |
 | `WEBDAV_LOGIN`           | `-webdav_login`        | WebDAV 账号                                                                                            |               |
 | `WEBDAV_PASSWORD`        | `-webdav_password`     | WebDAV 密码                                                                                            |               |
+| `WEBDAV_DIR`             | `-webdav_dir`          | 上传目录模板，变量 `{REPORT_ENGINEER}` `{datetime}` `{year}` `{month}` `{day}`（详见下节）；留空沿用 `report/<工程师>/<yyyymmdd>/` |               |
 
 ### 仅命令行参数（无对应环境变量）
 
@@ -279,6 +280,28 @@ curl -sk -H "Authorization: Bearer $N9E_TOKEN" \
 - `-n9e_base` 在 VM 模式下就是 VictoriaMetrics 地址；`-n9e_ds_id` 被忽略（`-list-ds` 会提示该模式无数据源概念）。
 - 项目过滤改用 `-n9e_project`：它按主机标识（ident / agent_hostname）关键字匹配主机（不会再「检索数据源」）。
 - 若机房内也不允许外联 WebDAV，不配 `WEBDAV_*` 即可，报告落在 `-report_dir` 本地目录。
+
+### 自定义上传目录（`WEBDAV_DIR`）
+
+默认上传到 `report/<工程师>/<yyyymmdd>/<文件名>`。需要按客户目录结构归档时，用 `WEBDAV_DIR` 配一个模板：
+
+```bash
+WEBDAV_DIR=/{REPORT_ENGINEER}/泸州市司法局/{year}/{month}/
+```
+
+| 变量 | 含义 | 示例 |
+| --- | --- | --- |
+| `{REPORT_ENGINEER}` | 同 `REPORT_ENGINEER`（`-report_engineer`），未配置时为空 | `张三` |
+| `{datetime}` | 当前日期，`yyyymmdd` | `20261105` |
+| `{year}` | 当前年，`yyyy` | `2026` |
+| `{month}` | 当前月，`mm`（补零） | `03` / `11` |
+| `{day}` | 当前日，`dd`（补零） | `03` |
+
+- 变量名大小写不敏感；未知变量按字面保留并打 WARN 提示，避免拼错后目录悄悄变短。
+- **空变量不留空段**：上例在 `REPORT_ENGINEER` 为空时解析为 `/泸州市司法局/2026/11`，不会出现 `//`；
+  模板里的重复斜杠、前后空格也会被归一化。
+- 目录由上传逻辑逐级 `MKCOL` 自动创建，已存在（服务端返回 405/301）视为成功。
+- 不配 `WEBDAV_DIR` 时行为与原来完全一致（`report/<工程师>/<yyyymmdd>/`，无工程师则 `report/default/`）。
 - 程序可以部署在机房内任何能访问 VM 的主机上（VM 与程序同机部署也是常见做法）。
 
 > 排查提示：日志出现「时序库中没有 ident 标签，已自动改用 agent_hostname」是**正常**的自动回退  
