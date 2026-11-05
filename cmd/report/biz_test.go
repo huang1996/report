@@ -778,3 +778,41 @@ func TestBizClickHouseKind(t *testing.T) {
 		}
 	}
 }
+
+// TestBizProbeAvgRangeSingleTarget 只有一个探活目标时，平均响应只写一个数（不再出现「4.1～4.1」）
+func TestBizProbeAvgRangeSingleTarget(t *testing.T) {
+	b := bizCertDemo([]BizProbe{{
+		System: "河湖长制", Name: "Gis地图服务", Addr: "172.16.1.3:6080",
+		Avail: 100, Avg: 4.1, Max: 15, Std: 1.5,
+	}})
+	text, _ := bizConclusion(b)
+	if strings.Contains(text, "4.1～4.1") {
+		t.Errorf("单目标结论不应出现重复区间：%s", text)
+	}
+	if !strings.Contains(text, "平均响应 4.1 ms") {
+		t.Errorf("单目标结论应只给一个平均响应值：%s", text)
+	}
+
+	out := buildBizDocx(t, b, true)
+	doc := docText(t, out)
+	if strings.Contains(doc, "4.1 ~ 4.1") || strings.Contains(doc, "4.1～4.1") {
+		t.Error("章节开头不应出现重复区间")
+	}
+	if !strings.Contains(doc, "平均响应时间 4.1 ms") {
+		t.Error("章节开头应只给一个平均响应值")
+	}
+	// 单目标时也不该说「最慢目标为 X」
+	if strings.Contains(doc, "最慢目标为") {
+		t.Error("单目标不应出现「最慢目标为」")
+	}
+
+	// 多目标仍保留区间
+	b2 := bizCertDemo([]BizProbe{
+		{System: "河湖长制", Name: "A", Addr: "172.16.1.3:6080", Avail: 100, Avg: 4.1, Max: 9, Std: 1},
+		{System: "河湖长制", Name: "B", Addr: "172.16.1.4:6080", Avail: 100, Avg: 12.4, Max: 30, Std: 2},
+	})
+	text2, _ := bizConclusion(b2)
+	if !strings.Contains(text2, "4.1～12.4") {
+		t.Errorf("多目标应给区间：%s", text2)
+	}
+}
