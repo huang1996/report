@@ -477,6 +477,29 @@ func runOnce(cfg *Config, ws, we time.Time) {
 			}
 		}
 	}
+	// 服务器巡检排除名单（-exclude_host_ips）：这些主机的资源指标不参与统计。
+	// 放在伪造与采集之后、工程师覆盖之前，保证后续的报告信息、结论、图表、明细全部基于过滤后的行。
+	var excludedHosts, excludeIPs []string
+	if len(cfg.ExcludeHostIPs) > 0 {
+		var bad []string
+		excludeIPs, bad = validIPs(cfg.ExcludeHostIPs)
+		if len(bad) > 0 {
+			log.Warnf("以下排除项不是合法 IP，已忽略：%s", strings.Join(bad, "、"))
+		}
+		var missing []string
+		rows, excludedHosts, missing = excludeHosts(rows, excludeIPs)
+		if len(excludedHosts) > 0 {
+			log.Infof("按 -exclude_host_ips 排除 %d 台主机（不计入服务器巡检）：%s",
+				len(excludedHosts), strings.Join(excludedHosts, "、"))
+		}
+		if len(missing) > 0 {
+			log.Warnf("以下 IP 不在本次巡检结果中，排除配置对它们未生效：%s", strings.Join(missing, "、"))
+		}
+		if len(rows) == 0 && len(excludedHosts) > 0 {
+			log.Warnf("排除后已无主机数据，服务器巡检章节将为空。")
+		}
+	}
+
 	if cfg.Engineer != "" {
 		for i := range rows {
 			rows[i].Engineer = cfg.Engineer
@@ -514,6 +537,16 @@ func runOnce(cfg *Config, ws, we time.Time) {
 			if !biz.HasData() {
 				log.Warnf("业务巡检：数据源 #%s 未采集到应用探活与中间件指标，章节留空。", bizDS)
 			}
+		}
+	}
+	// 排除名单同样作用于业务巡检：落在这些 IP 上的探活目标与中间件实例一并跳过，
+	// 否则会出现「服务器章节已排除、业务章节仍报它的问题」的矛盾
+	if len(excludeIPs) > 0 && biz != nil {
+		if n := filterBizByIPs(biz, excludeIPs); n > 0 {
+			log.Infof("业务巡检：跳过落在排除 IP 上的 %d 个组件", n)
+		}
+		if !biz.HasData() {
+			log.Warnf("业务巡检组件已全部被排除，章节留空。")
 		}
 	}
 

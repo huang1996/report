@@ -33,16 +33,17 @@ type Config struct {
 	Period string // check / week / range
 
 	// 输出
-	Out           string
-	Title         string
-	Engineer      string
-	Split         string // none / project / section
-	ChartTop      int
-	Dump          bool
-	Demo          bool   // 内置样例数据，用于本地验证
-	IncludeBiz    bool   // 是否包含「业务巡检」章节（默认不添加）
-	BizDS         string // 业务巡检专用数据源ID（留空则与 DS 相同）
-	FakeWhenEmpty bool   // 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标
+	Out            string
+	Title          string
+	Engineer       string
+	Split          string // none / project / section
+	ChartTop       int
+	Dump           bool
+	Demo           bool     // 内置样例数据，用于本地验证
+	IncludeBiz     bool     // 是否包含「业务巡检」章节（默认不添加）
+	BizDS          string   // 业务巡检专用数据源ID（留空则与 DS 相同）
+	FakeWhenEmpty  bool     // 统计周期内 n9e 无数据时，按数据源最新数据随机增减伪造资源巡检指标
+	ExcludeHostIPs []string // 排除的主机 IP：这些主机的资源指标与落在其上的业务组件都不计入统计（WAF 不受影响）
 
 	// WAF（safeline）数据源
 	DatabaseURL  string
@@ -199,6 +200,7 @@ func parseConfig() *Config {
 	c.IncludeBiz = envBool("REPORT_INCLUDE_BIZ", false)
 	c.BizDS = env("BIZ_DS_ID", "")
 	c.FakeWhenEmpty = envBool("REPORT_FAKE_WHEN_EMPTY", false)
+	c.ExcludeHostIPs = splitList(env("EXCLUDE_HOST_IPS", ""))
 	c.RunWeekdays = parseWeekdays(os.Getenv("REPORT_RUN_WEEKDAYS"))
 
 	// 命令行参数覆盖（compose 中通过 command 配置）
@@ -244,6 +246,9 @@ func parseConfig() *Config {
 	f.BoolVar(&c.IncludeBiz, "report_include_biz", c.IncludeBiz, "是否包含「业务巡检」章节（默认不添加；打开后无探活且无中间件数据则章节留空）")
 	f.StringVar(&c.BizDS, "biz_ds_id", c.BizDS, "业务巡检专用数据源ID（默认与 -n9e_ds_id 相同；业务指标通常在独立数据源）")
 	f.BoolVar(&c.FakeWhenEmpty, "fake_when_empty", c.FakeWhenEmpty, "统计周期内 n9e 无数据时，按该数据源最新数据随机增减伪造资源巡检指标（仅 n9e 部分，WAF 章节不受影响）")
+	var excludeHostIPs string
+	f.StringVar(&excludeHostIPs, "exclude_host_ips", strings.Join(c.ExcludeHostIPs, ","),
+		"排除的主机 IP，逗号分隔（这些主机的资源指标与落在其上的业务组件都不参与统计，WAF 不受影响）")
 	var runWeekdays string
 	f.StringVar(&runWeekdays, "report_run_weekdays", strings.Join(intsStr(c.RunWeekdays), ","), "定时模式下允许生成的星期（0=周日...6=周六，逗号分隔；留空则每天生成）")
 	var wafURL, wafExceptApps, wafExceptIPs string
@@ -285,6 +290,9 @@ func parseConfig() *Config {
 	}
 	if changed["report_run_weekdays"] {
 		c.RunWeekdays = parseWeekdays(runWeekdays)
+	}
+	if changed["exclude_host_ips"] {
+		c.ExcludeHostIPs = splitList(excludeHostIPs)
 	}
 
 	if c.DS == "" {
