@@ -54,6 +54,7 @@ type Config struct {
 	WebdavHost  string
 	WebdavLogin string
 	WebdavPass  string
+	WebdavDir   string // 上传目录模板（支持 {REPORT_ENGINEER} / {datetime} / {year} / {month} / {day}）；留空走 report/<owner>/<日期>/
 
 	// 其它
 	ReportDir  string
@@ -193,6 +194,7 @@ func parseConfig() *Config {
 	c.WebdavHost = env("WEBDAV_HOSTNAME", "")
 	c.WebdavLogin = env("WEBDAV_LOGIN", "")
 	c.WebdavPass = env("WEBDAV_PASSWORD", "")
+	c.WebdavDir = env("WEBDAV_DIR", "")
 	c.ReportDir = env("REPORT_DIR", "./report")
 	c.ReportTime = env("REPORT_TIME", "12:00")
 	c.HeaderText = env("REPORT_HEADER", "统筹运维项目")
@@ -243,6 +245,8 @@ func parseConfig() *Config {
 	f.StringVar(&c.WebdavHost, "webdav_hostname", c.WebdavHost, "WebDAV 上传地址（不配则只存本地）")
 	f.StringVar(&c.WebdavLogin, "webdav_login", c.WebdavLogin, "WebDAV 账号")
 	f.StringVar(&c.WebdavPass, "webdav_password", c.WebdavPass, "WebDAV 密码")
+	f.StringVar(&c.WebdavDir, "webdav_dir", c.WebdavDir,
+		"WebDAV 上传目录模板，可用变量 {REPORT_ENGINEER} {datetime} {year} {month} {day}；留空沿用 report/<工程师>/<日期>/")
 	f.BoolVar(&c.IncludeBiz, "report_include_biz", c.IncludeBiz, "是否包含「业务巡检」章节（默认不添加；打开后无探活且无中间件数据则章节留空）")
 	f.StringVar(&c.BizDS, "biz_ds_id", c.BizDS, "业务巡检专用数据源ID（默认与 -n9e_ds_id 相同；业务指标通常在独立数据源）")
 	f.BoolVar(&c.FakeWhenEmpty, "fake_when_empty", c.FakeWhenEmpty, "统计周期内 n9e 无数据时，按该数据源最新数据随机增减伪造资源巡检指标（仅 n9e 部分，WAF 章节不受影响）")
