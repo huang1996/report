@@ -202,9 +202,13 @@ func buildBizChapter(d *Docx, b *BizData, ch int, tn *tableNo, figNo int) int {
 				certWarn++
 			}
 		}
-		intro := sprintf("报告周期内 %d 个探活目标整体可用率 %.2f%%，平均响应时间 %.1f ~ %.1f ms，"+
-			"响应标准差均处于合理区间；最慢目标为 %s。",
-			len(b.Probes), availSum/float64(len(b.Probes)), minAvg, maxAvg, slowest.Name)
+		intro := sprintf("报告周期内 %d 个探活目标整体可用率 %.2f%%，平均响应时间 %s ms，响应标准差均处于合理区间",
+			len(b.Probes), availSum/float64(len(b.Probes)), bizAvgRange(minAvg, maxAvg, " ~ "))
+		if len(b.Probes) > 1 {
+			intro += sprintf("；最慢目标为 %s。", slowest.Name)
+		} else {
+			intro += "。"
+		}
 		if hasCert {
 			if certWarn > 0 {
 				intro += sprintf("其中 %d 个目标配置了 HTTPS 证书，%d 个剩余有效期不足 %d 天，需尽快安排续签。",
@@ -421,8 +425,8 @@ func bizConclusion(b *BizData) (string, string) {
 			}
 		}
 		if len(bad) == 0 {
-			segs = append(segs, sprintf("应用探活 %d 个目标全部可用（平均响应 %.1f～%.1f ms）",
-				len(b.Probes), minAvg, maxAvg))
+			segs = append(segs, sprintf("应用探活 %d 个目标全部可用（平均响应 %s ms）",
+				len(b.Probes), bizAvgRange(minAvg, maxAvg, "～")))
 		} else {
 			segs = append(segs, sprintf("应用探活 %d 个目标中 %d 个各项指标正常，需关注 %s",
 				len(b.Probes), normal, bizCutList(bad, 3)))
@@ -478,6 +482,15 @@ func bizConclusion(b *BizData) (string, string) {
 }
 
 // bizCutList 列表截断：超过 n 项时只留前 n 项并加「等」
+// bizAvgRange 平均响应的取值区间：只有一个目标（上下限相同）时只写一个数，
+// 避免出现「4.1～4.1 ms」这种无意义的区间；多个目标仍按 min～max 给范围。
+func bizAvgRange(minAvg, maxAvg float64, sep string) string {
+	if minAvg == maxAvg {
+		return sprintf("%.1f", minAvg)
+	}
+	return sprintf("%.1f%s%.1f", minAvg, sep, maxAvg)
+}
+
 func bizCutList(items []string, n int) string {
 	if len(items) <= n {
 		return strings.Join(items, "、")
